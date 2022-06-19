@@ -12,7 +12,7 @@ option(LIBIGL_WITH_PREDICATES          "Use Predicates"     ON)
 
 option(RENDER_TEXTURE                  "Render results"     ON)
 # enable embree for speeding up texture rendering
-option(LIBIGL_WITH_EMBREE              "Use EMBREE"         ON)
+option(LIBIGL_WITH_EMBREE              "Use EMBREE"         OFF)
 
 if (RENDER_TEXTURE)
 
@@ -51,6 +51,7 @@ add_library(conformal_cpp SHARED
   src/conformal_ideal_delaunay/Halfedge.cc
   src/conformal_ideal_delaunay/OverlayMesh.cc
   src/conformal_ideal_delaunay/BarycenterMapping.cc
+  src/conformal_ideal_delaunay/FormConversion.cc
   src/util/check_flip.cc
 )
 
@@ -60,6 +61,7 @@ add_library(conformal_py MODULE
   src/conformal_ideal_delaunay/OverlayMesh.cc
   src/conformal_ideal_delaunay/BarycenterMapping.cc
   src/conformal_ideal_delaunay/ConformalPybind.cpp
+  src/conformal_ideal_delaunay/FormConversion.cc
   src/util/check_flip.cc
 )
 
@@ -77,6 +79,9 @@ target_link_libraries(conformal_cpp PUBLIC igl::core spdlog::spdlog igl::predica
 target_link_libraries(conformal_py PUBLIC igl::core pybind11::module igl::predicates spdlog::spdlog ${MPFR_LIBRARIES})
 set_target_properties(conformal_py PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/py)
 set_target_properties(conformal_py PROPERTIES PREFIX "${PYTHON_MODULE_PREFIX}")
+
+add_executable(conformal_cpp_bin src/conformal_ideal_delaunay/CID.cpp)
+target_link_libraries(conformal_cpp_bin PRIVATE conformal_cpp)
 
 if (MSVC)
   set_target_properties(conformal_py PROPERTIES SUFFIX ".pyd")

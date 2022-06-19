@@ -41,6 +41,7 @@
 #include "Angle.hh"
 #include "Claussen.hh"
 #include "OverlayMesh.hh"
+#include "FormConversion.hh"
 
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/ostr.h>
@@ -958,6 +959,117 @@ public:
     return u;
   }
 
+  static void setup_b(OverlayMesh<Scalar>& m, const VectorX& alpha, VectorX& b) // system right-hand sid
+  {
+
+    Mesh<Scalar> mc = m.cmesh();
+
+    std::vector<std::vector<int>> gamma;
+    VectorX kappa_hat;
+    int n_v = mc.n_vertices();
+    int n_f = mc.n_faces();
+    int n_e = mc.n_edges();
+    int n_h = mc.n_halfedges();
+    int n_s = 0; // TODO: add input
+
+    b.resize(n_v-1 + n_s + n_f-1);
+    b.fill(0.0);
+    
+    std::vector<Scalar> Theta(n_v, 0.0);
+    std::vector<Scalar> kappa(n_s, 0.0);
+    
+    for(int h = 0; h < n_h; h++)
+    {
+      Theta[mc.to[mc.n[h]]] += alpha[h];
+    }
+
+    for(int r = 0; r < n_v-1; r++)
+    {
+      b[r] = mc.Th_hat[r] - Theta[r];
+    }
+
+    for(int s = 0; s < n_s; s++)
+    {
+      kappa[s] = 0.0;
+      int loop_size = gamma[s].size();
+      for(int si = 0; si < loop_size; si++)
+      {
+        int h = gamma[s][si];
+        int hn = mc.n[h];
+        int hnn = mc.n[hn];
+        if(mc.opp[hn] == gamma[s][(si+1)%loop_size])
+          kappa[s] -= alpha[hnn];
+        else if(mc.opp[hnn] == gamma[s][(si+1)%loop_size])
+          kappa[s] += alpha[hn];
+        else std::cerr << "ERROR: loop is broken" << std::endl;
+      }
+      b[n_v-1+s] = kappa_hat[s] - kappa[s];
+    }
+  }
+
+  static void setup_A(OverlayMesh<Scalar>& m, const VectorX& cot_alpha, Eigen::SparseMatrix<Scalar>& A, std::vector<int>& h2e){
+
+    Mesh<Scalar> mc = m.cmesh();
+
+    int n_v = mc.n_vertices();
+    int n_f = mc.n_faces();
+    int n_e = mc.n_edges();
+    int n_h = mc.n_halfedges();
+    int n_s = 0; // TODO: add input
+
+    h2e = std::vector<int>(n_h, -1); // map halfedges to unordered edge 
+    int ei = 0;
+    for(int i = 0; i < n_h; i++){
+      if(h2e[mc.opp[i]] != -1)
+        h2e[i] = h2e[mc.opp[i]];
+      else
+        h2e[i] = ei++;
+    }
+
+    std::vector<std::vector<int>> gamma;
+    A.resize(n_v-1 + n_s + n_f-1, n_e);
+    int loop_trips = 0;
+    for(int i = 0; i < n_s; i++)
+      loop_trips += gamma[i].size();
+    
+    typedef Eigen::Triplet<Scalar> Trip;
+    std::vector<Trip> trips;
+    trips.clear();
+    trips.resize(n_h*2 + loop_trips + (n_f-1)*3);
+    for(int h = 0; h < n_h; h++)
+    {
+      int v0 = mc.v0(h);
+      int v1 = mc.v1(h);
+      if(v0 < n_v-1) trips[h*2] = Trip(v0, h2e[h], mc.sign(h)*0.5*cot_alpha[h]);
+      if(v1 < n_v-1) trips[h*2+1] = Trip(v1, h2e[h], -mc.sign(h)*0.5*cot_alpha[h]);
+    }
+    
+    int base = n_h*2;
+    for(int s = 0; s < n_s; s++)
+    {
+      int loop_size = gamma[s].size();
+      for(int si = 0; si < loop_size; si++)
+      {
+        int h = gamma[s][si];
+        trips[base+si] = Trip(n_v-1 + s, mc.e(h), mc.sign(h)*0.5*(cot_alpha[h]+cot_alpha[mc.opp[h]]));
+      }
+      base += loop_size;
+    }
+    
+    for(int f = 0; f < n_f-1; f++)
+    {
+      int hi = mc.h[f];
+      int hj = mc.n[hi];
+      int hk = mc.n[hj];
+      trips[base+f*3] = Trip(n_v-1 + n_s + f, h2e[hi], mc.sign(hi));
+      trips[base+f*3+1] = Trip(n_v-1 + n_s + f, h2e[hj], mc.sign(hj));
+      trips[base+f*3+2] = Trip(n_v-1 + n_s + f, h2e[hk], mc.sign(hk));
+    }
+    
+    A.setFromTriplets(trips.begin(), trips.end());
+
+  }
+
   /**
    * The top-level conformal-hyperblic-delaunay algorithm
    * 
@@ -1072,6 +1184,25 @@ public:
       Eigen::SparseMatrix<Scalar> hessian;
       Hessian(mc, cot_alpha, hessian);
       VectorX d = DescentDirection(hessian, currentg, fixed_dof, solve_stats);
+
+#define TRY_XI
+#ifdef TRY_XI
+      spdlog::info("setup A");
+      Eigen::SparseMatrix<Scalar> A;
+      std::vector<int> h2e;
+      setup_A(m, cot_alpha, A, h2e);
+      spdlog::info("setup b");
+      VectorX b;
+      setup_b(m, alpha, b);
+      Eigen::SparseLU< Eigen::SparseMatrix<Scalar> > chol(A);
+      spdlog::info("solve Ax=b");
+      VectorX result = chol.solve(b);
+      // convert dxi to dphi
+      VectorX dxi(mc.n_halfedges());
+      for(int i = 0; i < mc.n_halfedges(); i++)
+        dxi[i] = mc.sign(i) * result[h2e[i]];
+      form_conversion(mc, dxi, d);
+#endif
 
       // Terminate if newton decrement sufficiently smalll      
       Scalar newton_decr = d.dot(currentg);
