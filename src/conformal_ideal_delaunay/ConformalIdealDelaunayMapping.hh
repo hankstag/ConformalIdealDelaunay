@@ -119,6 +119,11 @@ public:
   static void ComputeAngles(const Mesh<Scalar>& m, const VectorX& u, VectorX& alpha, VectorX& cot_alpha)
   {
     
+    VectorX xi(m.n_halfedges()); xi.setZero();
+    for(int i = 0; i < xi.rows(); i++){
+      xi[i] =  u[m.to[i]] - u[m.to[m.opp[i]]];
+    }
+
     alpha.setZero(m.n_halfedges());
     cot_alpha.setZero(m.n_halfedges());
 
@@ -140,16 +145,11 @@ public:
       int hi = m.h[f];
       int hj = m.n[hi];
       int hk = m.n[hj];
-      int i = m.v_rep[m.to[hj]];
-      int j = m.v_rep[m.to[hk]];
-      int k = m.v_rep[m.to[hi]];
-      Scalar ui = u[i];
-      Scalar uj = u[j];
-      Scalar uk = u[k];
-      Scalar uijk_avg = (ui + uj + uk)/3.0; // Scale lengths for numerical stability
-      Scalar li = ell(m.l[m.e(hi)], uj, uk, uijk_avg);
-      Scalar lj = ell(m.l[m.e(hj)], uk, ui, uijk_avg);
-      Scalar lk = ell(m.l[m.e(hk)], ui, uj, uijk_avg);
+
+      Scalar li = m.l[m.e(hi)] * exp(1.0/6.0*(xi[hk]-xi[hj]));
+      Scalar lj = m.l[m.e(hj)] * exp(1.0/6.0*(xi[hi]-xi[hk]));
+      Scalar lk = m.l[m.e(hk)] * exp(1.0/6.0*(xi[hj]-xi[hi]));
+
       // (following "A Cotangent Laplacian for Images as Surfaces")
       Scalar s = (li + lj + lk) / 2.0;
       Scalar Aijk4 = 4.0 * sqrt(std::max<Scalar>(s * (s - li) * (s - lj) * (s - lk), 0.0));
@@ -327,6 +327,26 @@ public:
     H.setFromTriplets(trips.begin(), trips.end());
   }
 
+static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::SparseMatrix<Scalar>& H)
+  {
+    H.resize(m.n_ind_vertices(), m.n_ind_vertices());
+    typedef Eigen::Triplet<Scalar> Trip;
+    std::vector<Trip> trips;
+    trips.clear();
+    trips.resize(m.n_halfedges() * 2);
+#pragma omp parallel for
+    for (int h = 0; h < m.n_halfedges(); h++)
+    {
+      int v0 = m.v_rep[m.v0(h)];
+      int v1 = m.v_rep[m.v1(h)];
+      Scalar w = (cot_alpha[h] + cot_alpha[m.opp[h]]) / 2;
+      trips[h * 2] = Trip(v0, v1, -w);
+      trips[h * 2 + 1] = Trip(v0, v0, w);
+    }
+
+    H.setFromTriplets(trips.begin(), trips.end());
+  }  
+
   /**
    * Given original edge length and two scale factors defined on two endpoints, compute the rescaled edge lengths.
    * 
@@ -351,7 +371,7 @@ public:
    * @param solve_stats struct collecting info for solvings through out the algorithm
    * @return bool, true indicates delaunay condition is violated.
    */
-  static bool NonDelaunay(Mesh<Scalar>& m, const VectorX& u, int e, SolveStats<Scalar>& solve_stats)
+  static bool NonDelaunay(Mesh<Scalar>& m, const VectorX& xi, int e, SolveStats<Scalar>& solve_stats)
   {
     if (m.type[m.h0(e)] == 4)
       return false; //virtual diagonal of symmetric trapezoid
@@ -362,39 +382,16 @@ public:
     int hji = m.h1(e);
     int him = m.n[hji];
     int hmj = m.n[him];
-    int i = m.v_rep[m.to[hji]];
-    int j = m.v_rep[m.to[hij]];
-    int k = m.v_rep[m.to[hjk]];
-    int n = m.v_rep[m.to[him]];
-    Scalar ui = u[i];
-    Scalar uj = u[j];
-    Scalar uk = u[k];
-    Scalar um = u[n];
-    Scalar uijk_avg = (ui + uj + uk)/3.0;
-    Scalar ujim_avg = (uj + ui + um)/3.0;
-    Scalar ljk = ell(m.l[m.e(hjk)], uj, uk, uijk_avg);
-    Scalar lki = ell(m.l[m.e(hki)], uk, ui, uijk_avg);
-    Scalar lij = ell(m.l[m.e(hij)], ui, uj, uijk_avg);
-    Scalar lji = ell(m.l[m.e(hji)], uj, ui, ujim_avg);
-    Scalar lmj = ell(m.l[m.e(hmj)], um, uj, ujim_avg);
-    Scalar lim = ell(m.l[m.e(him)], ui, um, ujim_avg);
+
+    Scalar ljk = m.l[m.e(hjk)] * exp((xi[hij]-xi[hki])/6);
+    Scalar lki = m.l[m.e(hki)] * exp((xi[hjk]-xi[hij])/6);
+    Scalar lij = m.l[m.e(hij)] * exp((xi[hki]-xi[hjk])/6);
+    Scalar lji = m.l[m.e(hji)] * exp((xi[hmj]-xi[him])/6);
+    Scalar lmj = m.l[m.e(hmj)] * exp((xi[him]-xi[hji])/6);
+    Scalar lim = m.l[m.e(him)] * exp((xi[hji]-xi[hmj])/6);
     
-    bool pre_flip_check = (ljk / lki + lki / ljk - (lij / ljk) * (lij / lki)) + (lmj / lim + lim / lmj - (lji / lmj) * (lji / lim)) < 0;
-    
-    // additionally check whether delaunay is violated after flip
-    // we consider the configuration to 'violate delaunay condition' only if 
-    // it does not satisfy delaunay check AND post-flip configuration satisfies delaunay condition.
-    Scalar umki_avg = (um + uk + ui)/3.0;
-    Scalar ukmj_avg = (uk + um + uj)/3.0;
-    Scalar _lkm_non_scaled = (m.l[m.e(hjk)] * m.l[m.e(him)] + m.l[m.e(hki)] * m.l[m.e(hmj)]) / m.l[m.e(hij)];
-    Scalar _lkm = ell(_lkm_non_scaled , uk, um, ukmj_avg);
-    Scalar _lmj = ell(m.l[m.e(hmj)], um, uj, ukmj_avg);
-    Scalar _ljk = ell(m.l[m.e(hjk)], uj, uk, ukmj_avg);
-    Scalar _lmk = ell(_lkm_non_scaled , um, uk, umki_avg);
-    Scalar _lki = ell(m.l[m.e(hki)] , uk, ui, umki_avg);
-    Scalar _lim = ell(m.l[m.e(him)] , ui, um, umki_avg);
-    bool post_flip_check = (_lki / _lim + _lim / _lki - (_lmk / _lki) * (_lmk / _lim)) + (_ljk / _lmj + _lmj / _ljk - (_lkm / _ljk) * (_lkm / _lmj)) < 0;
-    return pre_flip_check && !post_flip_check;
+    return (ljk / lki + lki / ljk - (lij / ljk) * (lij / lki)) + (lmj / lim + lim / lmj - (lji / lmj) * (lji / lim)) < 0;
+  
   }
 
   /**
@@ -407,7 +404,7 @@ public:
    * @param Ptolemy, bool, when true the edge length is updated via ptolemy formula, otherwise using law of cosine.
    * @return bool, true indicates flip succeeds.
    */
-  static bool EdgeFlip(std::set<int>& q, Mesh<Scalar>& m, const VectorX& u, int e, int tag, DelaunayStats& delaunay_stats, bool Ptolemy = true)
+  static bool EdgeFlip(std::set<int>& q, Mesh<Scalar>& m, int e, int tag, DelaunayStats& delaunay_stats, bool Ptolemy = true)
   {
     Mesh<Scalar>& mc = m.cmesh();
 
@@ -637,13 +634,13 @@ public:
     for (int i = 0; i < to_flip.size(); i++)
     {
       if (to_flip[i] == 1)
-        EdgeFlip(q, m, u, mc.e(hki), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, mc.e(hki), 2, delaunay_stats, Ptolemy);
       if (to_flip[i] == 2)
-        EdgeFlip(q, m, u, mc.e(hjk), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, mc.e(hjk), 2, delaunay_stats, Ptolemy);
       if (to_flip[i] == 5)
-        EdgeFlip(q, m, u, mc.e(him), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, mc.e(him), 2, delaunay_stats, Ptolemy);
       if (to_flip[i] == 6)
-        EdgeFlip(q, m, u, mc.e(hmj), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, mc.e(hmj), 2, delaunay_stats, Ptolemy);
     }
 
     return true;
@@ -662,6 +659,11 @@ public:
   static void MakeDelaunay(Mesh<Scalar>& m, const VectorX& u, DelaunayStats& delaunay_stats, SolveStats<Scalar>& solve_stats, bool Ptolemy = true)
   {
     Mesh<Scalar>& mc = m.cmesh();
+    VectorX xi(mc.n_halfedges()); xi.setZero();
+    for(int i = 0; i < xi.rows(); i++){
+      xi[i] =  u[mc.to[i]] - u[mc.to[mc.opp[i]]];
+    }
+
     std::set<int> q;
     for (int i = 0; i < mc.n_halfedges(); i++)
     {
@@ -678,12 +680,12 @@ public:
       q.erase(q.begin());
       int type0 = mc.type[mc.h0(e)];
       int type1 = mc.type[mc.h1(e)];
-      if (!(type0 == 2 && type1 == 2) && !(type0 == 4) && NonDelaunay(mc, u, e, solve_stats))
+      if (!(type0 == 2 && type1 == 2) && !(type0 == 4) && NonDelaunay(mc, xi, e, solve_stats))
       {
         int Re = -1;
         if (type0 == 1 && type1 == 1)
           Re = mc.e(mc.R[mc.h0(e)]);
-        if (!EdgeFlip(q, m, u, e, 0, delaunay_stats, Ptolemy))
+        if (!EdgeFlip(q, m, e, 0, delaunay_stats, Ptolemy))
           continue;
         int hn = mc.n[mc.h0(e)];
         q.insert(mc.e(hn));
@@ -696,7 +698,7 @@ public:
           int e = Re;
           if (Re == -1)
             spdlog::info("Negative index");
-          if (!EdgeFlip(q, m, u, e, 1, delaunay_stats, Ptolemy))
+          if (!EdgeFlip(q, m, e, 1, delaunay_stats, Ptolemy))
             continue;
           int hn = mc.n[mc.h0(e)];
           q.insert(mc.e(hn));
@@ -778,6 +780,58 @@ public:
       }
     }
   }
+
+  static VectorX DescentDirection(Mesh<Scalar>& mc, const VectorX& alpha, const VectorX& cot_alpha, std::vector<int>& h2e, int fixed_dof, SolveStats<Scalar>& solve_stats)
+  {
+    
+    static Scalar a = 0.0; // Parameter for interpolating from the Newton direction to steepest descent
+
+    Eigen::SparseMatrix<Scalar> A;
+    VectorX b;
+    setup_A(mc, cot_alpha, A, h2e);
+    setup_b(mc, alpha, b);
+
+    // Compute corrected descent direction
+    while (true)
+    {
+      Eigen::SparseMatrix<Scalar> mat;
+      if (a == 0)
+      {
+        mat = A; // Use newton step
+      }
+      else 
+      { 
+        Eigen::SparseMatrix<Scalar> id(A.rows(), A.cols());
+        id.setIdentity();
+        
+        // Create matrix with correction
+        mat = A + a*id;
+      }
+
+      Eigen::SparseLU< Eigen::SparseMatrix<Scalar> > solver(mat);
+      VectorX d = solver.solve(b);
+      Scalar newton_decr = d.dot(b);
+      if (solver.info() == Eigen::Success && newton_decr < 0)
+      {
+        a *= 0.5; // start from lower a on the next step
+        solve_stats.n_solves++;
+        return d;
+      }
+      else if (a == 0)
+      {
+        std::cout << "newton_decr: " << newton_decr << std::endl;
+        std::cout << "solver.info(): " << (solver.info() == Eigen::Success) << std::endl;
+        a = 1; // We did not try the correction yet, start from arbitrary value 1
+        spdlog::info(" Starting correction.");
+      }
+      else
+      {
+        std::cout << "newton_decr: " << newton_decr << std::endl;
+        a *= 2; // Correction was not enough, increase weight of id
+      }
+    }
+  }
+
 
   /**
    * Backtracking line search function, checking the sign of projected gradient.
@@ -959,10 +1013,8 @@ public:
     return u;
   }
 
-  static void setup_b(OverlayMesh<Scalar>& m, const VectorX& alpha, VectorX& b) // system right-hand sid
+  static void setup_b(Mesh<Scalar>& mc, const VectorX& alpha, VectorX& b) // system right-hand sid
   {
-
-    Mesh<Scalar> mc = m.cmesh();
 
     std::vector<std::vector<int>> gamma;
     VectorX kappa_hat;
@@ -1007,9 +1059,7 @@ public:
     }
   }
 
-  static void setup_A(OverlayMesh<Scalar>& m, const VectorX& cot_alpha, Eigen::SparseMatrix<Scalar>& A, std::vector<int>& h2e){
-
-    Mesh<Scalar> mc = m.cmesh();
+  static void setup_A(Mesh<Scalar>& mc, const VectorX& cot_alpha, Eigen::SparseMatrix<Scalar>& A, std::vector<int>& h2e){
 
     int n_v = mc.n_vertices();
     int n_f = mc.n_faces();
@@ -1183,26 +1233,14 @@ public:
       // Compute gradient and descent direction from Hessian (with efficient solver)
       Eigen::SparseMatrix<Scalar> hessian;
       Hessian(mc, cot_alpha, hessian);
-      VectorX d = DescentDirection(hessian, currentg, fixed_dof, solve_stats);
-
-#define TRY_XI
-#ifdef TRY_XI
-      spdlog::info("setup A");
-      Eigen::SparseMatrix<Scalar> A;
+      // VectorX d = DescentDirection(hessian, currentg, fixed_dof, solve_stats);
       std::vector<int> h2e;
-      setup_A(m, cot_alpha, A, h2e);
-      spdlog::info("setup b");
-      VectorX b;
-      setup_b(m, alpha, b);
-      Eigen::SparseLU< Eigen::SparseMatrix<Scalar> > chol(A);
-      spdlog::info("solve Ax=b");
-      VectorX result = chol.solve(b);
-      // convert dxi to dphi
+      VectorX result = DescentDirection(mc, alpha, cot_alpha, h2e, fixed_dof, solve_stats);
       VectorX dxi(mc.n_halfedges());
       for(int i = 0; i < mc.n_halfedges(); i++)
         dxi[i] = mc.sign(i) * result[h2e[i]];
+      VectorX d;
       form_conversion(mc, dxi, d);
-#endif
 
       // Terminate if newton decrement sufficiently smalll      
       Scalar newton_decr = d.dot(currentg);
