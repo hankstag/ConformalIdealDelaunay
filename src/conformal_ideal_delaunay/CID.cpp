@@ -28,7 +28,7 @@ int main(int argc, char* argv[]){
     std::vector<double> Th_hat;
     igl::matrix_to_list(Th_hat_mat, Th_hat);
 
-    int log_level = 2;
+    int log_level = 1;
     cmdl("-l") >> log_level;
 
     name = model.substr(0, model.find_last_of('.'));

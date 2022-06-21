@@ -404,7 +404,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
    * @param Ptolemy, bool, when true the edge length is updated via ptolemy formula, otherwise using law of cosine.
    * @return bool, true indicates flip succeeds.
    */
-  static bool EdgeFlip(std::set<int>& q, Mesh<Scalar>& m, int e, int tag, DelaunayStats& delaunay_stats, bool Ptolemy = true)
+  static bool EdgeFlip(std::set<int>& q, Mesh<Scalar>& m, VectorX& xi, int e, int tag, DelaunayStats& delaunay_stats, bool Ptolemy = true)
   {
     Mesh<Scalar>& mc = m.cmesh();
 
@@ -631,16 +631,19 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       }
     } // to make it cw on side 2
 
+    xi[hij] = -(xi[mc.n[hij]] + xi[mc.n[mc.n[hij]]]);
+    xi[mc.opp[hij]] = -xi[hij];
+
     for (int i = 0; i < to_flip.size(); i++)
     {
       if (to_flip[i] == 1)
-        EdgeFlip(q, m, mc.e(hki), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, xi, mc.e(hki), 2, delaunay_stats, Ptolemy);
       if (to_flip[i] == 2)
-        EdgeFlip(q, m, mc.e(hjk), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, xi, mc.e(hjk), 2, delaunay_stats, Ptolemy);
       if (to_flip[i] == 5)
-        EdgeFlip(q, m, mc.e(him), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, xi, mc.e(him), 2, delaunay_stats, Ptolemy);
       if (to_flip[i] == 6)
-        EdgeFlip(q, m, mc.e(hmj), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, xi, mc.e(hmj), 2, delaunay_stats, Ptolemy);
     }
 
     return true;
@@ -685,7 +688,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
         int Re = -1;
         if (type0 == 1 && type1 == 1)
           Re = mc.e(mc.R[mc.h0(e)]);
-        if (!EdgeFlip(q, m, e, 0, delaunay_stats, Ptolemy))
+        if (!EdgeFlip(q, m, xi, e, 0, delaunay_stats, Ptolemy))
           continue;
         int hn = mc.n[mc.h0(e)];
         q.insert(mc.e(hn));
@@ -698,7 +701,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
           int e = Re;
           if (Re == -1)
             spdlog::info("Negative index");
-          if (!EdgeFlip(q, m, e, 1, delaunay_stats, Ptolemy))
+          if (!EdgeFlip(q, m, xi, e, 1, delaunay_stats, Ptolemy))
             continue;
           int hn = mc.n[mc.h0(e)];
           q.insert(mc.e(hn));
@@ -710,6 +713,12 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
         // checkR();
       }
     }
+
+    for(int i = 0; i < xi.rows(); i++){
+      if(abs(xi[i] - u[mc.to[i]] + u[mc.to[mc.opp[i]]]) > 1e-16)
+        spdlog::error("{} / {} --> {}", xi[i], u[mc.to[i]] - u[mc.to[mc.opp[i]]], xi[i] - u[mc.to[i]] + u[mc.to[mc.opp[i]]]);
+    }
+
   }
 
   static VectorX DescentDirection(const Eigen::SparseMatrix<Scalar>& hessian, const VectorX& grad, int fixed_dof, SolveStats<Scalar>& solve_stats)
