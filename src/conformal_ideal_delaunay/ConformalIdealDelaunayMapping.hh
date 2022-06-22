@@ -116,13 +116,8 @@ public:
    *              ith halfedge.
    * @return void
    */
-  static void ComputeAngles(const Mesh<Scalar>& m, const VectorX& u, VectorX& alpha, VectorX& cot_alpha)
+  static void ComputeAngles(const Mesh<Scalar>& m, const VectorX& xi, VectorX& alpha, VectorX& cot_alpha)
   {
-    
-    VectorX xi(m.n_halfedges()); xi.setZero();
-    for(int i = 0; i < xi.rows(); i++){
-      xi[i] =  u[m.to[i]] - u[m.to[m.opp[i]]];
-    }
 
     alpha.setZero(m.n_halfedges());
     cot_alpha.setZero(m.n_halfedges());
@@ -659,13 +654,9 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
    * @param Ptolemy, bool, when true the edge length is updated via ptolemy formula, otherwise using law of cosine.
    * @return void.
    */
-  static void MakeDelaunay(Mesh<Scalar>& m, const VectorX& u, DelaunayStats& delaunay_stats, SolveStats<Scalar>& solve_stats, bool Ptolemy = true)
+  static void MakeDelaunay(Mesh<Scalar>& m, VectorX& xi, DelaunayStats& delaunay_stats, SolveStats<Scalar>& solve_stats, bool Ptolemy = true)
   {
     Mesh<Scalar>& mc = m.cmesh();
-    VectorX xi(mc.n_halfedges()); xi.setZero();
-    for(int i = 0; i < xi.rows(); i++){
-      xi[i] =  u[mc.to[i]] - u[mc.to[mc.opp[i]]];
-    }
 
     std::set<int> q;
     for (int i = 0; i < mc.n_halfedges(); i++)
@@ -712,11 +703,6 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
         }
         // checkR();
       }
-    }
-
-    for(int i = 0; i < xi.rows(); i++){
-      if(abs(xi[i] - u[mc.to[i]] + u[mc.to[mc.opp[i]]]) > 1e-16)
-        spdlog::error("{} / {} --> {}", xi[i], u[mc.to[i]] - u[mc.to[mc.opp[i]]], xi[i] - u[mc.to[i]] + u[mc.to[mc.opp[i]]]);
     }
 
   }
@@ -857,21 +843,25 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
    * @param stats_params, statistics parameters, for details check the struct definitions on the top
    * @return VectorX, updated per-vertex scale factor along descent direction.
    */
-  static VectorX LineSearchNewtonDecr(Mesh<Scalar>& m, const VectorX& u0, const VectorX& d0, Scalar& lambda, VectorX& currentg, bool& bound_norm, DelaunayStats& delaunay_stats, SolveStats<Scalar>& solve_stats, const AlgorithmParameters& alg_params, const LineSearchParameters& ls_params, const StatsParameters& stats_params){
+  static VectorX LineSearchNewtonDecr(Mesh<Scalar>& m, const VectorX& xi0, const VectorX& sol, std::vector<int>& h2e, Scalar& lambda, VectorX& currentg, bool& bound_norm, DelaunayStats& delaunay_stats, SolveStats<Scalar>& solve_stats, const AlgorithmParameters& alg_params, const LineSearchParameters& ls_params, const StatsParameters& stats_params){
     
     Mesh<Scalar> &mc = m.cmesh();
-    auto d = d0;
-    auto u = u0;
-    auto newton_decr = d.dot(currentg);
+    auto xi = xi0;
+
+    VectorX dxi(mc.n_halfedges());
+    for(int i = 0; i < mc.n_halfedges(); i++)
+      dxi[i] = mc.sign(i) * sol[h2e[i]];
+
+    auto newton_decr = sol.dot(currentg);
 
     // Scale the search direction vector by lambda
-    d *= lambda;  
+    dxi *= lambda;  
 
     // To avoid nans/infs
     if(ls_params.do_reduction){
-      while(d.maxCoeff() - d.minCoeff() > 10)
+      while(dxi.maxCoeff() - dxi.minCoeff() > 10)
       {
-        d /= 2;
+        dxi /= 2;
         lambda /=2;
       }
     }
@@ -881,40 +871,41 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     VectorX alpha, cot_alpha;
 
     // Line search
-    u += d;
-    MakeDelaunay(m, u, delaunay_stats, solve_stats);
-    ComputeAngles(mc, u, alpha, cot_alpha);
+    xi += dxi;
+
+    MakeDelaunay(m, xi, delaunay_stats, solve_stats);
+    ComputeAngles(mc, xi, alpha, cot_alpha);
 
     int count = 0;
-    Gradient(mc, alpha, currentg, solve_stats); // Current gradient value
+    setup_b(mc, alpha, currentg); // Current gradient value
     Scalar l2_g_sq = currentg.dot(currentg); // Squared norm of the gradient
-    Scalar proj_grad = d.dot(currentg);  // Projected gradient
+    Scalar proj_grad = sol.dot(currentg);  // Projected gradient
     while ((proj_grad > 0) || (l2_g_sq > l2_g0_sq && bound_norm))
     {
       // Backtrack one step
-      d /= 2;
+      dxi /= 2;
       lambda /= 2; // record changes in lambda as well
-      u -= d;
-      MakeDelaunay(m, u, delaunay_stats, solve_stats);
-      ComputeAngles(mc, u, alpha, cot_alpha);
-      Gradient(mc, alpha, currentg, solve_stats); // update gradient
+      xi -= dxi;
+      MakeDelaunay(m, xi, delaunay_stats, solve_stats);
+      ComputeAngles(mc, xi, alpha, cot_alpha);
+      setup_b(mc, alpha, currentg); // update gradient
 
       // Line search condition to ensure quadratic convergence
       if (   (count == 0)
           && ((l2_g_sq <= l2_g0_sq) || (!bound_norm))
-          && (0.5 * (d.dot(currentg) + proj_grad) <= 0.1 * newton_decr))
+          && (0.5 * (sol.dot(currentg) + proj_grad) <= 0.1 * newton_decr))
       {
-        u += d; // Use full line step
+        xi += dxi; // Use full line step
         lambda *= 2;
-        MakeDelaunay(m, u, delaunay_stats, solve_stats);
-        ComputeAngles(mc, u, alpha, cot_alpha);
-        Gradient(mc, alpha, currentg, solve_stats); // update gradient
+        MakeDelaunay(m, xi, delaunay_stats, solve_stats);
+        ComputeAngles(mc, xi, alpha, cot_alpha);
+        setup_b(mc, alpha, currentg); // update gradient
         break;
       }
 
       // Update squared gradient norm and projected gradient
       l2_g_sq = currentg.dot(currentg);
-      proj_grad = d.dot(currentg);
+      proj_grad = sol.dot(currentg);
 
       count++;
 
@@ -930,7 +921,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
         break;
     }
     spdlog::debug("Used lambda {} ", lambda);
-    return u;
+    return xi;
   }
 
   /**
@@ -1167,6 +1158,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     VectorX u = u0;
     VectorX cot_alpha(mc.n_halfedges());
     VectorX alpha(mc.n_halfedges());
+    VectorX xi(mc.n_halfedges()); xi.setZero();
 
     // Degree of freedom to eliminate to make the Hessian positive definite
     // Choose first vertex arbitrarily for the fixed_dof for regular meshes
@@ -1216,7 +1208,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
 
     // Optionally use Euclidean flips instead of Ptolemy flips for the initial MakeDelaunay
     if (!alg_params.initial_ptolemy){
-      MakeDelaunay(m, u, delaunay_stats, solve_stats, false);
+      MakeDelaunay(m, xi, delaunay_stats, solve_stats, false);
       spdlog::debug("Finish first delaunay non_ptolemy");
       m.garbage_collection();
       m.bc_original_to_eq(mc.n, mc.to, mc.l);
@@ -1225,10 +1217,10 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     // step1 apply per triangle the bc map to unit equilateral triangle
     original_to_equilateral(mc.pts, mc.pt_in_f, mc.n, mc.h, mc.l);
     if (alg_params.initial_ptolemy) {
-      MakeDelaunay(m, u, delaunay_stats, solve_stats, true);
+      MakeDelaunay(m, xi, delaunay_stats, solve_stats, true);
       spdlog::debug("Finish first delaunay ptolemy");
     } 
-    ComputeAngles(mc, u, alpha, cot_alpha);
+    ComputeAngles(mc, xi, alpha, cot_alpha);
     std::ofstream mf;
     if(stats_params.error_log){
       mf.open(stats_params.output_dir+"/"+stats_params.name+".csv",std::ios_base::out);
@@ -1236,7 +1228,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     }
 
     VectorX currentg;
-    Gradient(mc, alpha, currentg, solve_stats);
+    setup_b(mc, alpha, currentg);
     while (currentg.cwiseAbs().maxCoeff() >= alg_params.error_eps)
     {
       // Compute gradient and descent direction from Hessian (with efficient solver)
@@ -1244,15 +1236,13 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       Hessian(mc, cot_alpha, hessian);
       // VectorX d = DescentDirection(hessian, currentg, fixed_dof, solve_stats);
       std::vector<int> h2e;
-      VectorX result = DescentDirection(mc, alpha, cot_alpha, h2e, fixed_dof, solve_stats);
+      VectorX sol = DescentDirection(mc, alpha, cot_alpha, h2e, fixed_dof, solve_stats);
       VectorX dxi(mc.n_halfedges());
       for(int i = 0; i < mc.n_halfedges(); i++)
-        dxi[i] = mc.sign(i) * result[h2e[i]];
-      VectorX d;
-      form_conversion(mc, dxi, d);
+        dxi[i] = mc.sign(i) * sol[h2e[i]];
 
       // Terminate if newton decrement sufficiently smalll      
-      Scalar newton_decr = d.dot(currentg);
+      Scalar newton_decr = sol.dot(currentg);
 
       if(stats_params.error_log){
         solve_stats.cetm_energy = ConformalEquivalenceEnergy(mc, alpha, u);
@@ -1283,10 +1273,12 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
         lambda = ls_params.lambda0;
         spdlog::debug("Using norm bound.");
       }
+
+      VectorX d;
       if(ls_params.energy_cond)
         u = LineSearchCETMEnergy(m, u, d, lambda, currentg, bound_norm, delaunay_stats, solve_stats, alg_params, ls_params, stats_params);
       else
-        u = LineSearchNewtonDecr(m, u, d, lambda, currentg, bound_norm, delaunay_stats, solve_stats, alg_params, ls_params, stats_params);
+        xi = LineSearchNewtonDecr(m, xi, sol, h2e, lambda, currentg, bound_norm, delaunay_stats, solve_stats, alg_params, ls_params, stats_params);
 
       // Display current iteration information
       if(ls_params.energy_cond)
@@ -1294,7 +1286,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       else
         spdlog::info("itr({}) lm({}) flips({}) newton_decr({}) max_error({}))", solve_stats.n_solves, lambda, delaunay_stats.n_flips, newton_decr, currentg.cwiseAbs().maxCoeff());
 
-      ComputeAngles(mc, u, alpha, cot_alpha);
+      ComputeAngles(mc, xi, alpha, cot_alpha);
 
     }
 
@@ -1331,6 +1323,8 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       pt_bcs[cnt] = pt.bc;
       cnt++;
     }
+
+    form_conversion(mc, xi, u);
 
     return std::make_tuple(u, delaunay_stats.flip_seq);
 
