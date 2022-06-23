@@ -4,6 +4,48 @@
 #include <igl/matrix_to_list.h>
 #include "argh.h"
 #include "plot.hh"
+#include <igl/list_to_matrix.h>
+
+#include <igl/euler_characteristic.h>
+#include <igl/vertex_components.h>
+#include <igl/is_edge_manifold.h>
+#include <igl/is_vertex_manifold.h>
+#include <igl/adjacency_matrix.h>
+#include <igl/boundary_loop.h>
+#include <igl/edges.h>
+
+// return n_genus and n_bd
+std::pair<int,int> topology_info_of_mesh(const Eigen::MatrixXi& F){
+  Eigen::MatrixXi C, Ci;
+  Eigen::SparseMatrix<double> AL;
+  igl::adjacency_matrix(F, AL);
+  igl::vertex_components(AL, C, Ci);
+  int connected_components = Ci.rows();
+  // #V should be the total number of all non-detached vertices
+  int nv = 0;
+  for(int i=0;i<Ci.rows();i++){
+    if(Ci(i) != 1)
+      nv += Ci(i);
+  }
+  int nf = F.rows();
+  Eigen::MatrixXi E;
+  igl::edges(F, E);
+
+  // int eu = igl::euler_characteristic(F);
+  std::vector<std::vector<int>> bds;
+  igl::boundary_loop(F, bds);
+  // check whether an edge is shared by more than two facets
+  bool is_edge_manifold = igl::is_edge_manifold(F);
+  Eigen::VectorXi VB;
+  igl::is_vertex_manifold(F, VB);
+
+  int n_bd = bds.size();
+  int ne = E.rows();
+  int eu = nv - ne + nf + n_bd;
+  int n_genus = (2-eu)/2;
+  return std::make_pair(n_genus, n_bd);
+}
+
 
 int main(int argc, char* argv[]){
 
@@ -116,9 +158,26 @@ int main(int argc, char* argv[]){
     viewer.launch();
 #endif
 
-    gamma.clear();
-    kappa_hat.clear();
+    auto gb = topology_info_of_mesh(F);
+    if(std::get<0>(gb) == 0){
+        gamma.clear();
+        kappa_hat.clear();
+    }
+
     std::tie(_pVn, _pFn, u, v, _pFuv, p_Fn_to_F, endpoints) = conformal_parametrization_VL<double>(V, F, _pTh_hat, gamma, kappa_hat, alg_params, ls_params, stats_params);
+
+    Eigen::MatrixXi pFn, pFuv;
+    Eigen::MatrixXd pVn;
+    igl::list_to_matrix(_pVn, pVn);
+    igl::list_to_matrix(_pFn, pFn);
+    igl::list_to_matrix(_pFuv, pFuv);
+    Eigen::MatrixXd p_uv(u.size(), 2);
+    for(int i = 0; i < u.size(); i++)
+      p_uv.row(i) << u[i], v[i];
+    
+    igl::opengl::glfw::Viewer viewer;
+    viewer.data().set_mesh(p_uv, pFuv);
+    viewer.launch();
 
     return 0;
 
