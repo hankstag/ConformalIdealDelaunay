@@ -89,6 +89,8 @@ namespace OverlayProblem{
         std::vector<int> v_rep;             // identification map of vertices for tufted cover
 
         std::vector<Scalar> Th_hat;         
+        std::vector<Scalar> kappa_hat;         
+        std::vector<std::vector<int>> gamma;         
 
         // vectors to store sampled points
         std::vector<Pt<Scalar>> pts;

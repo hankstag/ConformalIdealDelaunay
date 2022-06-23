@@ -44,6 +44,7 @@
 #include <igl/boundary_loop.h>
 #include <igl/is_border_vertex.h>
 #include <igl/edges.h>
+#include <igl/triangle_triangle_adjacency.h>
 #include <igl/writeOBJ.h>
 
 /**
@@ -60,12 +61,27 @@
  */
 template <typename Scalar>
 Mesh<Scalar>
-FV_to_double(const Eigen::MatrixXd& V, const Eigen::MatrixXi& F, const std::vector<Scalar> &Theta_hat, std::vector<int>& vtx_reindex, std::vector<int>& indep_vtx, std::vector<int>& dep_vtx, std::vector<int>& v_rep, std::vector<int>& bnd_loops){
+FV_to_double(const Eigen::MatrixXd& V, const Eigen::MatrixXi& F, const std::vector<Scalar> &Theta_hat, const std::vector<std::vector<int>>& gamma, const std::vector<Scalar>& kappa_hat, std::vector<int>& vtx_reindex, std::vector<int>& indep_vtx, std::vector<int>& dep_vtx, std::vector<int>& v_rep, std::vector<int>& bnd_loops){
     Mesh<Scalar> m;
     // Build the NOB representation from the input connectivity
     std::vector<int> next_he;
     std::vector<int> opp;
     FV_to_NOB(F, next_he, opp, bnd_loops, vtx_reindex);
+
+    // convert the gamma face id loops to halfedge loops
+    Eigen::MatrixXi TT, TTi;
+    igl::triangle_triangle_adjacency(F, TT, TTi);
+    std::vector<std::vector<int>> gamma_he(gamma.size(), std::vector<int>());
+    for(int i = 0; i < gamma.size(); i++){
+        for(int k = 0; k < gamma[i].size(); k++){
+            int fa = gamma[i][k], fb = gamma[i][(k+1)%gamma[i].size()];
+            for(int z = 0; z < 3; z++){
+                if(TT(fb, z) == fa){
+                    gamma_he[i].push_back(fb*3+z);
+                }
+            }
+        }
+    }
 
     // Build the connectivity arrays from the NOB arrays
     Connectivity C;
@@ -148,6 +164,10 @@ FV_to_double(const Eigen::MatrixXd& V, const Eigen::MatrixXi& F, const std::vect
         m.Th_hat = Theta_hat_double;
         m.v_rep = v_rep;
     }
+
+    m.gamma = gamma_he;
+    m.kappa_hat = kappa_hat;
+
     return m;
 }
 
@@ -244,6 +264,8 @@ std::tuple<
 conformal_metric(const Eigen::MatrixXd &V,
                     const Eigen::MatrixXi &F,
                     const std::vector<Scalar> &Theta_hat,
+                    const std::vector<std::vector<int>>& gamma,
+                    const std::vector<Scalar>& kappa_hat,
                     std::vector<int>& pt_fids,
                     std::vector<Eigen::Matrix<double, 3, 1>>& pt_bcs,
                     std::shared_ptr<AlgorithmParameters> alg_params=nullptr,
@@ -263,7 +285,7 @@ conformal_metric(const Eigen::MatrixXd &V,
 
     std::vector<Scalar> u;
     std::vector<int> vtx_reindex, indep_vtx, dep_vtx, v_rep, bnd_loops;
-    Mesh<Scalar> m = FV_to_double(V, F, Theta_hat, vtx_reindex, indep_vtx, dep_vtx, v_rep, bnd_loops);
+    Mesh<Scalar> m = FV_to_double(V, F, Theta_hat, gamma, kappa_hat, vtx_reindex, indep_vtx, dep_vtx, v_rep, bnd_loops);
 
     OverlayMesh<Scalar> mo(m);
 
@@ -783,7 +805,9 @@ conformal_metric_CL(const Eigen::MatrixXd &V,
     // do conformal_metric
     std::vector<int> pt_fids_placeholder;
     std::vector<Eigen::Matrix<double, 3, 1>> pt_bcs_placeholder;
-    auto conformal_out = conformal_metric(V, F, Theta_hat, pt_fids_placeholder, pt_bcs_placeholder, alg_params, ls_params, stats_params);
+    std::vector<std::vector<int>> gamma;
+    std::vector<Scalar> kappa_hat;
+    auto conformal_out = conformal_metric(V, F, Theta_hat, gamma, kappa_hat, pt_fids_placeholder, pt_bcs_placeholder, alg_params, ls_params, stats_params);
     OverlayMesh<Scalar> mo = std::get<0>(conformal_out);
     std::vector<Scalar> u = std::get<1>(conformal_out);
     std::vector<int> vtx_reindex = std::get<4>(conformal_out);
@@ -883,7 +907,9 @@ conformal_metric_VL(const Eigen::MatrixXd &V,
     // do conformal_metric
     std::vector<int> pt_fids_placeholder;
     std::vector<Eigen::Matrix<double, 3, 1>> pt_bcs_placeholder;
-    auto conformal_out = conformal_metric(V, F, Theta_hat, pt_fids_placeholder, pt_bcs_placeholder, alg_params, ls_params, stats_params);
+    std::vector<std::vector<int>> gamma;
+    std::vector<Scalar> kappa_hat;
+    auto conformal_out = conformal_metric(V, F, Theta_hat, gamma, kappa_hat, pt_fids_placeholder, pt_bcs_placeholder, alg_params, ls_params, stats_params);
     OverlayMesh<Scalar> mo = std::get<0>(conformal_out);
     std::vector<Scalar> u = std::get<1>(conformal_out);
     std::vector<int> vtx_reindex = std::get<4>(conformal_out);
@@ -1006,7 +1032,9 @@ conformal_parametrization_CL(const Eigen::MatrixXd &V,
     // do conformal_metric
     std::vector<int> pt_fids_placeholder;
     std::vector<Eigen::Matrix<double, 3, 1>> pt_bcs_placeholder;
-    auto conformal_out = conformal_metric(V, F, Theta_hat, pt_fids_placeholder, pt_bcs_placeholder, alg_params, ls_params, stats_params);
+    std::vector<std::vector<int>> gamma;
+    std::vector<Scalar> kappa_hat;
+    auto conformal_out = conformal_metric(V, F, Theta_hat, gamma, kappa_hat, pt_fids_placeholder, pt_bcs_placeholder, alg_params, ls_params, stats_params);
     OverlayMesh<Scalar> mo = std::get<0>(conformal_out);
     std::vector<Scalar> u = std::get<1>(conformal_out);
     std::vector<int> vtx_reindex = std::get<4>(conformal_out);
@@ -1073,6 +1101,8 @@ std::tuple<
 conformal_parametrization_VL(const Eigen::MatrixXd &V,
                     const Eigen::MatrixXi &F,
                     const std::vector<Scalar> &Theta_hat,
+                    const std::vector<std::vector<int>>& gamma,
+                    const std::vector<Scalar>& kappa_hat,
                     std::shared_ptr<AlgorithmParameters> alg_params=nullptr,
                     std::shared_ptr<LineSearchParameters> ls_params=nullptr,
                     std::shared_ptr<StatsParameters> stats_params=nullptr)
@@ -1104,7 +1134,7 @@ conformal_parametrization_VL(const Eigen::MatrixXd &V,
     // do conformal_metric
     std::vector<int> pt_fids_placeholder;
     std::vector<Eigen::Matrix<double, 3, 1>> pt_bcs_placeholder;
-    auto conformal_out = conformal_metric(V, F, Theta_hat, pt_fids_placeholder, pt_bcs_placeholder, alg_params, ls_params, stats_params);
+    auto conformal_out = conformal_metric(V, F, Theta_hat, gamma, kappa_hat, pt_fids_placeholder, pt_bcs_placeholder, alg_params, ls_params, stats_params);
     OverlayMesh<Scalar> mo = std::get<0>(conformal_out);
     std::vector<Scalar> u = std::get<1>(conformal_out);
     std::vector<int> vtx_reindex = std::get<4>(conformal_out);

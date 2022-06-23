@@ -179,7 +179,9 @@ PYBIND11_MODULE(conformal_py, m)
     
   m.def("fv_to_double_float", &FV_to_double<double>, "convert v, f to mesh data structure in double");
   m.def("conformal_metric_double", &conformal_metric<double>, "Main conformal method in double",
-    pybind11::arg("V"), pybind11::arg("F"), pybind11::arg("Theta_hat"), pybind11::arg("pt_fids"), pybind11::arg("pt_bcs"),
+    pybind11::arg("V"), pybind11::arg("F"), pybind11::arg("Theta_hat"), 
+    pybind11::arg("gamma"), pybind11::arg("kappa_hat"),
+    pybind11::arg("pt_fids"), pybind11::arg("pt_bcs"),
     pybind11::arg("alg_params") = nullptr,
     pybind11::arg("ls_params") = nullptr,
     pybind11::arg("stats_params") = nullptr,
@@ -188,7 +190,9 @@ PYBIND11_MODULE(conformal_py, m)
 
 #ifdef WITH_MPFR
   m.def("conformal_metric_mpf", &conformal_metric<mpfr::mpreal>, "Main conformal method in multiprecision",
-    pybind11::arg("V"), pybind11::arg("F"), pybind11::arg("Theta_hat"), pybind11::arg("pt_fids"), pybind11::arg("pt_bcs"),
+    pybind11::arg("V"), pybind11::arg("F"), pybind11::arg("Theta_hat"), 
+    pybind11::arg("gamma"), pybind11::arg("kappa_hat"),
+    pybind11::arg("pt_fids"), pybind11::arg("pt_bcs"),
     pybind11::arg("alg_params") = nullptr,
     pybind11::arg("ls_params") = nullptr,
     pybind11::arg("stats_params") = nullptr,
@@ -215,6 +219,7 @@ PYBIND11_MODULE(conformal_py, m)
   m.def("conformal_parametrization_cl_double", &conformal_parametrization_CL<double>, "get conformal parametrization, output: connectivity(n,opp), u coordinate(per corner), v coordinate(per corner)");
   m.def("conformal_parametrization_vf_double", &conformal_parametrization_VL<double>, "get conformal parametrization,output: (V, F, u, v)",
   pybind11::arg("V"), pybind11::arg("F"), pybind11::arg("Theta_hat"),
+    pybind11::arg("gamma"), pybind11::arg("kappa_hat"),
     pybind11::arg("alg_params") = nullptr,
     pybind11::arg("ls_params") = nullptr,
     pybind11::arg("stats_params") = nullptr,pybind11::call_guard<pybind11::scoped_ostream_redirect,
@@ -224,6 +229,7 @@ PYBIND11_MODULE(conformal_py, m)
   m.def("conformal_metric_vl_mpf", &conformal_metric_VL<mpfr::mpreal>, "get conformal metric, output: (V,F), l(per halfedge) in multiprecision" );
   m.def("conformal_parametrization_cl_mpf", &conformal_parametrization_CL<mpfr::mpreal>, "get conformal parametrization, output: connectivity(n,opp), u coordinate(per corner), v coordinate(per corner) in multiprecision");
   m.def("conformal_parametrization_vf_mpf", &conformal_parametrization_VL<mpfr::mpreal>, "get conformal parametrization,output: (V, F, u, v) in multiprecision",pybind11::arg("V"), pybind11::arg("F"), pybind11::arg("Theta_hat"),
+    pybind11::arg("gamma"), pybind11::arg("kappa_hat"),
     pybind11::arg("alg_params") = nullptr,
     pybind11::arg("ls_params") = nullptr,
     pybind11::arg("stats_params") = nullptr,pybind11::call_guard<pybind11::scoped_ostream_redirect,

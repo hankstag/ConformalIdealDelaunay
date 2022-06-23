@@ -3,6 +3,7 @@
 #include <igl/readCSV.h>
 #include <igl/matrix_to_list.h>
 #include "argh.h"
+#include "plot.hh"
 
 int main(int argc, char* argv[]){
 
@@ -80,7 +81,44 @@ int main(int argc, char* argv[]){
     std::vector<int> p_Fn_to_F;
 
     std::vector<std::pair<int,int>> endpoints;
-    std::tie(_pVn, _pFn, u, v, _pFuv, p_Fn_to_F, endpoints) = conformal_parametrization_VL<double>(V, F, _pTh_hat, alg_params, ls_params, stats_params);
+    
+    // setup gamma loops for the seamless similarity condition
+    std::vector<std::vector<int>> gamma = {{}};
+    std::vector<double> kappa_hat;
+
+    Eigen::MatrixXi gamma_mat;
+    igl::readCSV(input_dir + "/" + name + "_gamma", gamma_mat);
+    for(int i = 0; i < gamma_mat.rows(); i++){
+        if(gamma_mat(i, 0) == -1)
+            gamma.push_back({});
+        else
+            gamma.back().push_back(gamma_mat(i));
+    }
+    Eigen::MatrixXd kappa_hat_mat;
+    igl::readCSV(input_dir + "/" + name + "_kappa_hat", kappa_hat_mat);
+    for(int i = 0; i < kappa_hat_mat.rows(); i++)
+        kappa_hat.push_back(kappa_hat_mat(i, 0));
+
+// #define VIEW_GAMMA_LOOPS
+#ifdef VIEW_GAMMA_LOOPS
+    igl::opengl::glfw::Viewer viewer;
+    viewer.data().set_mesh(V, F);
+    // Eigen::MatrixXd colors(F.rows(), 3); colors.setConstant(1);
+    // for(int f: gamma[0])
+    //     colors.row(f) << 1, 0, 0;
+    // colors.row(gamma[0][0]) << 0, 0, 1;
+    // colors.row(gamma[0][1]) << 0, 1, 0;
+    // viewer.data().set_colors(colors);
+    for(int i = 0; i < Th_hat.size(); i++){
+        if(Th_hat[i] != M_PI * 2)
+            viewer.data().add_points(V.row(i), Eigen::RowVector3d(1, 0, 0));
+    }
+    viewer.launch();
+#endif
+
+    gamma.clear();
+    kappa_hat.clear();
+    std::tie(_pVn, _pFn, u, v, _pFuv, p_Fn_to_F, endpoints) = conformal_parametrization_VL<double>(V, F, _pTh_hat, gamma, kappa_hat, alg_params, ls_params, stats_params);
 
     return 0;
 

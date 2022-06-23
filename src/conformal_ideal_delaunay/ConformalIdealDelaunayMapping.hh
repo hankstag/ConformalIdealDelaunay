@@ -389,6 +389,23 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
   
   }
 
+  static bool validate_gamma_loops(Mesh<Scalar>& mc){
+    int n_s = mc.gamma.size();
+    for(int s = 0; s < n_s; s++){
+      int loop_size = mc.gamma[s].size();
+      for(int si = 0; si < loop_size; si++)
+      {
+        int h = mc.gamma[s][si];
+        int hn = mc.n[h];
+        int hnn = mc.n[hn];
+        int hx = mc.gamma[s][(si+1)%loop_size];
+        if(mc.opp[hn] != hx && mc.opp[hnn] != hx)
+          return false;
+      }
+    }
+    return true;
+  }
+
   /**
    * Flip the given halfedge in mesh and update the edge length accordingly.
    * 
@@ -597,6 +614,13 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       }
     }
 
+    int hl = mc.n[hij];
+    int hr = mc.n[mc.n[mc.opp[hij]]];
+    int hru = mc.n[mc.n[hr]];
+    int hlu = mc.n[hl];
+    int ho = mc.opp[hij];
+    int hu = hij;
+
     delaunay_stats.n_flips++;
     if (Ptolemy)
     {
@@ -628,6 +652,64 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
 
     xi[hij] = -(xi[mc.n[hij]] + xi[mc.n[mc.n[hij]]]);
     xi[mc.opp[hij]] = -xi[hij];
+
+    // update gamma loops
+    int n_s = mc.gamma.size();
+    for(int i = 0; i < n_s; ++i)
+    {
+
+      std::vector<int>& li = mc.gamma[i];
+      int n = li.size();
+      for(int j = 0; j < n; ++j)
+      {
+        int _hij = li[j];
+        int _hij1 = li[(j+1)%n];
+        int _hij2 = li[(j+2)%n];
+        
+        bool change = true;
+        
+        if(_hij == hru && _hij1 == mc.opp[hr]) li.insert(li.begin()+j+1,ho);
+        else if(_hij == hru && _hij1 == hu && _hij2 == mc.opp[hl]) li[(j+1)%n] = ho;
+        else if(_hij == hru && _hij1 == hu && _hij2 == mc.opp[hlu]) li.erase(li.begin()+((j+1)%n));
+        
+        else if(_hij == hr && _hij1 == mc.opp[hru]) li.insert(li.begin()+j+1,hu);
+        else if(_hij == hr && _hij1 == hu && _hij2 == mc.opp[hlu]) li[(j+1)%n] = hu;
+        else if(_hij == hr && _hij1 == hu && _hij2 == mc.opp[hl]) li.erase(li.begin()+((j+1)%n));
+        
+        else if(_hij == hl && _hij1 == mc.opp[hlu]) li.insert(li.begin()+j+1,hu);
+        else if(_hij == hl && _hij1 == ho && _hij2 == mc.opp[hru]) li[(j+1)%n] = hu;
+        else if(_hij == hl && _hij1 == ho && _hij2 == mc.opp[hr]) li.erase(li.begin()+((j+1)%n));
+        
+        else if(_hij == hlu && _hij1 == mc.opp[hl]) li.insert(li.begin()+j+1,ho);
+        else if(_hij == hlu && _hij1 == ho && _hij2 == mc.opp[hr]) li[(j+1)%n] = ho;
+        else if(_hij == hlu && _hij1 == ho && _hij2 == mc.opp[hru]) li.erase(li.begin()+((j+1)%n));
+        
+        else change = false;
+        
+        if(change) // cleanup "cusps" in loop
+        {
+          n = li.size();
+          int j0 = j;
+          int j1 = (j+1)%n;
+          int j2 = (j+2)%n;
+          if(li[j0] == mc.opp[li[j1]])
+          {
+            if(j1 < j0) std::swap(j0,j1);
+            li.erase(li.begin()+j1);
+            li.erase(li.begin()+j0);
+          }
+          else if(li[j1] == mc.opp[li[j2]])
+          {
+            if(j2 < j1) std::swap(j1,j2);
+            li.erase(li.begin()+j2);
+            li.erase(li.begin()+j1);
+          }
+        }
+      }
+    }
+
+    if(!validate_gamma_loops(mc))
+      spdlog::error("Loop is broken!");
 
     for (int i = 0; i < to_flip.size(); i++)
     {
@@ -818,6 +900,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
         std::cout << "solver.info(): " << (solver.info() == Eigen::Success) << std::endl;
         a = 1; // We did not try the correction yet, start from arbitrary value 1
         spdlog::info(" Starting correction.");
+        exit(0);
       }
       else
       {
@@ -1016,13 +1099,11 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
   static void setup_b(Mesh<Scalar>& mc, const VectorX& alpha, VectorX& b) // system right-hand sid
   {
 
-    std::vector<std::vector<int>> gamma;
-    VectorX kappa_hat;
     int n_v = mc.n_vertices();
     int n_f = mc.n_faces();
     int n_e = mc.n_edges();
     int n_h = mc.n_halfedges();
-    int n_s = 0; // TODO: add input
+    int n_s = mc.gamma.size();
 
     b.resize(n_v-1 + n_s + n_f-1);
     b.fill(0.0);
@@ -1043,19 +1124,20 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     for(int s = 0; s < n_s; s++)
     {
       kappa[s] = 0.0;
-      int loop_size = gamma[s].size();
+      int loop_size = mc.gamma[s].size();
       for(int si = 0; si < loop_size; si++)
       {
-        int h = gamma[s][si];
+        int h = mc.gamma[s][si];
         int hn = mc.n[h];
         int hnn = mc.n[hn];
-        if(mc.opp[hn] == gamma[s][(si+1)%loop_size])
+        if(mc.opp[hn] == mc.gamma[s][(si+1)%loop_size])
           kappa[s] -= alpha[hnn];
-        else if(mc.opp[hnn] == gamma[s][(si+1)%loop_size])
+        else if(mc.opp[hnn] == mc.gamma[s][(si+1)%loop_size])
           kappa[s] += alpha[hn];
         else std::cerr << "ERROR: loop is broken" << std::endl;
       }
-      b[n_v-1+s] = kappa_hat[s] - kappa[s];
+      b[n_v-1+s] = mc.kappa_hat[s] - kappa[s];
+      std::cout << s << ", set b: " << b[n_v-1+s] << std::endl;
     }
   }
 
@@ -1065,7 +1147,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     int n_f = mc.n_faces();
     int n_e = mc.n_edges();
     int n_h = mc.n_halfedges();
-    int n_s = 0; // TODO: add input
+    int n_s = mc.gamma.size();
 
     h2e = std::vector<int>(n_h, -1); // map halfedges to unordered edge 
     int ei = 0;
@@ -1076,11 +1158,10 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
         h2e[i] = ei++;
     }
 
-    std::vector<std::vector<int>> gamma;
     A.resize(n_v-1 + n_s + n_f-1, n_e);
     int loop_trips = 0;
     for(int i = 0; i < n_s; i++)
-      loop_trips += gamma[i].size();
+      loop_trips += mc.gamma[i].size();
     
     typedef Eigen::Triplet<Scalar> Trip;
     std::vector<Trip> trips;
@@ -1097,11 +1178,11 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     int base = n_h*2;
     for(int s = 0; s < n_s; s++)
     {
-      int loop_size = gamma[s].size();
+      int loop_size = mc.gamma[s].size();
       for(int si = 0; si < loop_size; si++)
       {
-        int h = gamma[s][si];
-        trips[base+si] = Trip(n_v-1 + s, mc.e(h), mc.sign(h)*0.5*(cot_alpha[h]+cot_alpha[mc.opp[h]]));
+        int h = mc.gamma[s][si];
+        trips[base+si] = Trip(n_v-1 + s, h2e[h], mc.sign(h)*0.5*(cot_alpha[h]+cot_alpha[mc.opp[h]]));
       }
       base += loop_size;
     }
@@ -1237,9 +1318,6 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       // VectorX d = DescentDirection(hessian, currentg, fixed_dof, solve_stats);
       std::vector<int> h2e;
       VectorX sol = DescentDirection(mc, alpha, cot_alpha, h2e, fixed_dof, solve_stats);
-      VectorX dxi(mc.n_halfedges());
-      for(int i = 0; i < mc.n_halfedges(); i++)
-        dxi[i] = mc.sign(i) * sol[h2e[i]];
 
       // Terminate if newton decrement sufficiently smalll      
       Scalar newton_decr = sol.dot(currentg);
