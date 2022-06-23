@@ -81,7 +81,7 @@ set_target_properties(conformal_py PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${PROJECT
 set_target_properties(conformal_py PROPERTIES PREFIX "${PYTHON_MODULE_PREFIX}")
 
 add_executable(conformal_cpp_bin src/conformal_ideal_delaunay/CID.cpp)
-target_link_libraries(conformal_cpp_bin PRIVATE conformal_cpp)
+target_link_libraries(conformal_cpp_bin PRIVATE conformal_cpp plot)
 
 if (MSVC)
   set_target_properties(conformal_py PROPERTIES SUFFIX ".pyd")
