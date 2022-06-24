@@ -858,6 +858,48 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     }
   }
 
+  static void xi_to_phi(Mesh<Scalar>& m, const VectorX& xi, VectorX& phi){
+    
+    Eigen::SparseMatrix<Scalar> Q;
+    std::vector<Eigen::Triplet<Scalar>> trips;
+    int r = 0;
+    VectorX rhs(xi.rows());
+    for(int i = 0; i < m.n_halfedges(); i++){
+      // xi[i] = phi[m.to[i]] - phi[m.to[m.opp[i]]];
+      // if(m.to[m.opp[i]] == m.n_vertices()-1) continue;
+      // if(m.to[i] == m.n_vertices()-1) continue;
+      trips.push_back(Eigen::Triplet<Scalar>(r, m.to[m.opp[i]], -1));
+      trips.push_back(Eigen::Triplet<Scalar>(r, m.to[i], 1));
+      rhs(r) = xi(i);
+      r++;
+    }
+    Q.resize(r, m.n_vertices());
+    Q.setFromTriplets(trips.begin(), trips.end());
+    rhs.conservativeResize(r);
+    // (Q^T Q) d\phi = Q^T d\xi 
+    // d\xi = Q d\phi
+    // d\phi = (Q^T Q)^-1 Q^T d\xi
+
+    Eigen::SimplicialLDLT<Eigen::SparseMatrix<Scalar>> solver;
+    Eigen::SparseMatrix<Scalar> mat = Q.transpose()*Q;
+    solver.compute(mat);
+
+    // std::cout << mat << std::endl;
+
+    phi = solver.solve(Q.transpose()*rhs);
+    // phi.conservativeResize(phi.rows()+1);
+    // phi(phi.rows()-1) = 0;
+
+    // std::cout << (solver.info() == Eigen::Success) << std::endl;
+
+    for(int i = 0; i < m.n_halfedges(); i++){
+      auto diff = abs(xi[i]-(phi[m.to[i]] - phi[m.to[m.opp[i]]]));
+      if(diff > 1e-15)
+        std::cout << m.to[i] << "," << m.to[m.opp[i]] << "(" << xi[i] << "/" << phi[m.to[i]] - phi[m.to[m.opp[i]]] << ") : " << xi[i]-(phi[m.to[i]] - phi[m.to[m.opp[i]]]) << std::endl;
+    }
+
+  }
+
   static VectorX DescentDirection(Mesh<Scalar>& mc, const VectorX& alpha, const VectorX& cot_alpha, std::vector<int>& h2e, int fixed_dof, SolveStats<Scalar>& solve_stats)
   {
     
@@ -887,7 +929,17 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
 
       Eigen::SparseLU< Eigen::SparseMatrix<Scalar> > solver(mat);
       VectorX d = solver.solve(b);
-      Scalar newton_decr = d.dot(b);
+
+      VectorX dxi(mc.n_halfedges());
+      for(int i = 0; i < mc.n_halfedges(); i++)
+        dxi[i] = mc.sign(i) * d[h2e[i]];
+      VectorX dphi;
+      xi_to_phi(mc, dxi, dphi);
+
+      VectorX top = b.topRows(dphi.rows());
+      Scalar newton_decr = dphi.dot(top);
+      std::cout << "newton_decr : "<< newton_decr << std::endl;
+
       if (solver.info() == Eigen::Success && newton_decr < 0)
       {
         a *= 0.5; // start from lower a on the next step
@@ -909,7 +961,6 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       }
     }
   }
-
 
   /**
    * Backtracking line search function, checking the sign of projected gradient.
@@ -934,8 +985,12 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     VectorX dxi(mc.n_halfedges());
     for(int i = 0; i < mc.n_halfedges(); i++)
       dxi[i] = mc.sign(i) * sol[h2e[i]];
-
-    auto newton_decr = sol.dot(currentg);
+      
+    VectorX dphi;
+    xi_to_phi(mc, dxi, dphi);
+    
+    VectorX top = currentg.topRows(dphi.rows());
+    auto newton_decr = dphi.dot(top);
 
     // Scale the search direction vector by lambda
     dxi *= lambda;  
@@ -962,7 +1017,8 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     int count = 0;
     setup_b(mc, alpha, currentg); // Current gradient value
     Scalar l2_g_sq = currentg.dot(currentg); // Squared norm of the gradient
-    Scalar proj_grad = sol.dot(currentg);  // Projected gradient
+    top = currentg.topRows(dphi.rows());
+    Scalar proj_grad = dphi.dot(top);  // Projected gradient
     while ((proj_grad > 0) || (l2_g_sq > l2_g0_sq && bound_norm))
     {
       // Backtrack one step
@@ -972,11 +1028,12 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       MakeDelaunay(m, xi, delaunay_stats, solve_stats);
       ComputeAngles(mc, xi, alpha, cot_alpha);
       setup_b(mc, alpha, currentg); // update gradient
+      top = currentg.topRows(dphi.rows());
 
       // Line search condition to ensure quadratic convergence
       if (   (count == 0)
           && ((l2_g_sq <= l2_g0_sq) || (!bound_norm))
-          && (0.5 * (sol.dot(currentg) + proj_grad) <= 0.1 * newton_decr))
+          && (0.5 * (dphi.dot(top) + proj_grad) <= 0.1 * newton_decr))
       {
         xi += dxi; // Use full line step
         lambda *= 2;
@@ -988,7 +1045,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
 
       // Update squared gradient norm and projected gradient
       l2_g_sq = currentg.dot(currentg);
-      proj_grad = sol.dot(currentg);
+      proj_grad = dphi.dot(top);
 
       count++;
 
@@ -1320,7 +1377,14 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       VectorX sol = DescentDirection(mc, alpha, cot_alpha, h2e, fixed_dof, solve_stats);
 
       // Terminate if newton decrement sufficiently smalll      
-      Scalar newton_decr = sol.dot(currentg);
+      VectorX dxi(mc.n_halfedges());
+      for(int i = 0; i < mc.n_halfedges(); i++)
+        dxi[i] = mc.sign(i) * sol[h2e[i]];
+      VectorX dphi;
+      xi_to_phi(mc, dxi, dphi);
+
+      VectorX top = currentg.topRows(dphi.rows());
+      Scalar newton_decr = dphi.dot(top);
 
       if(stats_params.error_log){
         solve_stats.cetm_energy = ConformalEquivalenceEnergy(mc, alpha, u);
@@ -1402,7 +1466,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       cnt++;
     }
 
-    form_conversion(mc, xi, u);
+    xi_to_phi(mc, xi, u);
 
     return std::make_tuple(u, delaunay_stats.flip_seq);
 
