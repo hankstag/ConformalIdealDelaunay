@@ -56,7 +56,7 @@ int main(int argc, char* argv[]){
     auto stats_params = std::make_shared<StatsParameters>();
     
     // --d ${input_dir} --t ${input_dir}"/sphere10K_"$k"_Th_hat" --o ${output_dir} --p $k &
-    std::string model, name, input_dir, out_dir, th_file;
+    std::string model, name, input_dir, out_dir;
     int max_itr = 10;
     bool use_mpf = false;
     cmdl("-in") >> model; // this parameter is for batch run
@@ -64,23 +64,22 @@ int main(int argc, char* argv[]){
     cmdl("-o") >> out_dir;
     cmdl("-m") >> max_itr;
     cmdl("-mpf") >> use_mpf;
-    cmdl("-t") >> th_file;
+
+    name = model.substr(0, model.find_last_of('.'));
+    name = name.substr(name.find_last_of('/')+1);
 
     Eigen::MatrixXd Th_hat_mat;
-    igl::readCSV(input_dir + "/" + th_file, Th_hat_mat);
+    igl::readCSV(input_dir + "/" + name + "_Th_hat", Th_hat_mat);
     std::vector<double> Th_hat;
     igl::matrix_to_list(Th_hat_mat, Th_hat);
 
     int log_level = 1;
     cmdl("-l") >> log_level;
-
-    name = model.substr(0, model.find_last_of('.'));
-    name = name.substr(name.find_last_of('/')+1);
     
     stats_params->name = name;
     stats_params->error_log = false;
     stats_params->log_level = log_level;
-    stats_params->print_summary = false;
+    stats_params->print_summary = true;
     stats_params->output_dir = out_dir;
     
     alg_params->initial_ptolemy = true;
@@ -145,12 +144,12 @@ int main(int argc, char* argv[]){
 #ifdef VIEW_GAMMA_LOOPS
     igl::opengl::glfw::Viewer viewer;
     viewer.data().set_mesh(V, F);
-    // Eigen::MatrixXd colors(F.rows(), 3); colors.setConstant(1);
-    // for(int f: gamma[0])
-    //     colors.row(f) << 1, 0, 0;
+    Eigen::MatrixXd colors(F.rows(), 3); colors.setConstant(1);
+    for(int f: gamma[1])
+        colors.row(f) << 1, 0, 0;
     // colors.row(gamma[0][0]) << 0, 0, 1;
     // colors.row(gamma[0][1]) << 0, 1, 0;
-    // viewer.data().set_colors(colors);
+    viewer.data().set_colors(colors);
     for(int i = 0; i < Th_hat.size(); i++){
         if(Th_hat[i] != M_PI * 2)
             viewer.data().add_points(V.row(i), Eigen::RowVector3d(1, 0, 0));
@@ -174,10 +173,6 @@ int main(int argc, char* argv[]){
     Eigen::MatrixXd p_uv(u.size(), 2);
     for(int i = 0; i < u.size(); i++)
       p_uv.row(i) << u[i], v[i];
-    
-    igl::opengl::glfw::Viewer viewer;
-    viewer.data().set_mesh(p_uv, pFuv);
-    viewer.launch();
 
     return 0;
 
