@@ -64,6 +64,7 @@ int main(int argc, char* argv[]){
     cmdl("-o") >> out_dir;
     cmdl("-m") >> max_itr;
     cmdl("-mpf") >> use_mpf;
+    cmdl("-x") >> alg_params->use_xi;
 
     name = model.substr(0, model.find_last_of('.'));
     name = name.substr(name.find_last_of('/')+1);
@@ -90,7 +91,7 @@ int main(int argc, char* argv[]){
     igl::readOBJ(input_dir + "/" + model, V, F);
 
     if(use_mpf){
-        int mpf_prec = 100;
+        int mpf_prec = 300;
         alg_params->MPFR_PREC = mpf_prec;
         alg_params->min_lambda = std::pow(2, -100);
         alg_params->error_eps = 1e-24;
@@ -102,6 +103,7 @@ int main(int argc, char* argv[]){
     ls_params->bound_norm_thres = 1.0;
 
     std::vector<double> _pTh_hat(Th_hat.size(), 0.0);
+    std::vector<mpfr::mpreal> _pTh_hat_mpf(Th_hat.size(), 0.0);
     if(use_mpf){
       mpfr::mpreal::set_default_prec(alg_params->MPFR_PREC);
       mpfr::mpreal::set_emax(mpfr::mpreal::get_emax_max());
@@ -110,6 +112,7 @@ int main(int argc, char* argv[]){
       for(int i = 0; i < Th_hat.size(); i++){
         auto angle = Th_hat[i];
         _pTh_hat[i] = double(round(60 * angle / M_PI) * mpfr::const_pi() / 60);
+        _pTh_hat_mpf[i] = mpfr::mpreal(round(60 * angle / M_PI) * mpfr::const_pi() / 60);
       }
     }else{
       for(int i = 0; i < Th_hat.size(); i++)
@@ -126,6 +129,7 @@ int main(int argc, char* argv[]){
     // setup gamma loops for the seamless similarity condition
     std::vector<std::vector<int>> gamma = {{}};
     std::vector<double> kappa_hat;
+    std::vector<mpfr::mpreal> kappa_hat_mpf;
 
     Eigen::MatrixXi gamma_mat;
     igl::readCSV(input_dir + "/" + name + "_gamma", gamma_mat);
@@ -163,7 +167,10 @@ int main(int argc, char* argv[]){
         kappa_hat.clear();
     }
 
-    std::tie(_pVn, _pFn, u, v, _pFuv, p_Fn_to_F, endpoints) = conformal_parametrization_VL<double>(V, F, _pTh_hat, gamma, kappa_hat, alg_params, ls_params, stats_params);
+    if(use_mpf){
+        auto res = conformal_parametrization_VL<mpfr::mpreal>(V, F, _pTh_hat_mpf, gamma, kappa_hat_mpf, alg_params, ls_params, stats_params);
+    }else
+        std::tie(_pVn, _pFn, u, v, _pFuv, p_Fn_to_F, endpoints) = conformal_parametrization_VL<double>(V, F, _pTh_hat, gamma, kappa_hat, alg_params, ls_params, stats_params);
 
     Eigen::MatrixXi pFn, pFuv;
     Eigen::MatrixXd pVn;
