@@ -52,6 +52,7 @@ add_library(conformal_cpp SHARED
   src/conformal_ideal_delaunay/OverlayMesh.cc
   src/conformal_ideal_delaunay/BarycenterMapping.cc
   src/conformal_ideal_delaunay/FormConversion.cc
+  src/conformal_ideal_delaunay/rref.cc
   src/util/check_flip.cc
 )
 

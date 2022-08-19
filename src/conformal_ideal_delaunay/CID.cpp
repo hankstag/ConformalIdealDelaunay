@@ -85,6 +85,7 @@ int main(int argc, char* argv[]){
     
     alg_params->initial_ptolemy = true;
     alg_params->max_itr = max_itr;
+    alg_params->bypass_overlay = true;
     
     Eigen::MatrixXd V;
     Eigen::MatrixXi F;
@@ -168,6 +169,9 @@ int main(int argc, char* argv[]){
     }
 
     if(use_mpf){
+        std::cout << "use mpf!!\n";
+        for(int i = 0; i < kappa_hat.size(); i++)
+            kappa_hat_mpf.push_back(mpfr::mpreal(kappa_hat[i]));
         auto res = conformal_parametrization_VL<mpfr::mpreal>(V, F, _pTh_hat_mpf, gamma, kappa_hat_mpf, alg_params, ls_params, stats_params);
     }else
         std::tie(_pVn, _pFn, u, v, _pFuv, p_Fn_to_F, endpoints) = conformal_parametrization_VL<double>(V, F, _pTh_hat, gamma, kappa_hat, alg_params, ls_params, stats_params);

@@ -43,6 +43,8 @@
 #include "OverlayMesh.hh"
 #include "FormConversion.hh"
 
+#include "rref.hh"
+
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/ostr.h>
 
@@ -523,6 +525,17 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     int him = m.n[hji];
     int hmj = m.n[him];
 
+    // triangles: hij, hjk, hki
+    //            hji, him, hmj
+    if(abs(xi[hij] + xi[hjk] + xi[hki]) > 1e-10 || abs(xi[hji] + xi[him] + xi[hmj]) > 1e-10){
+      std::cerr << "error! xi not closed." << std::endl;
+      std::cerr << "f" << m.f[hij] << ": " << hij << "," << hjk << "," << hki << std::endl;
+      std::cerr << "f" << m.f[hji] << ": " << hji << "," << him << "," << hmj << std::endl;
+      std::cerr << xi[hij] << ", " << xi[hjk] << ", " << xi[hki] << ", " << xi[hij] + xi[hjk] + xi[hki] <<std::endl;
+      std::cerr << xi[hji] << ", " << xi[him] << ", " << xi[hmj] << ", " << xi[hji] + xi[him] + xi[hmj] <<std::endl;
+      exit(0);
+    }
+
     Scalar ui = 0;
     Scalar uj = xi[hij];
     Scalar uk = -xi[hki];
@@ -836,7 +849,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
    * @param Ptolemy, bool, when true the edge length is updated via ptolemy formula, otherwise using law of cosine.
    * @return bool, true indicates flip succeeds.
    */
-  static bool EdgeFlip(std::set<int>& q, Mesh<Scalar>& m, VectorX& xi, int e, int tag, DelaunayStats& delaunay_stats, bool Ptolemy = true)
+  static bool EdgeFlip(std::set<int>& q, Mesh<Scalar>& m, VectorX& xi, VectorX& dxi, int e, int tag, DelaunayStats& delaunay_stats, bool Ptolemy = true)
   {
     Mesh<Scalar>& mc = m.cmesh();
 
@@ -1074,6 +1087,9 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     xi[hij] = -(xi[mc.n[hij]] + xi[mc.n[mc.n[hij]]]);
     xi[mc.opp[hij]] = -xi[hij];
 
+    dxi[hij] = -(dxi[mc.n[hij]] + dxi[mc.n[mc.n[hij]]]);
+    dxi[mc.opp[hij]] = -dxi[hij];
+
     // update gamma loops
     int n_s = mc.gamma.size();
     for(int i = 0; i < n_s; ++i)
@@ -1135,13 +1151,13 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     for (int i = 0; i < to_flip.size(); i++)
     {
       if (to_flip[i] == 1)
-        EdgeFlip(q, m, xi, mc.e(hki), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, xi, dxi, mc.e(hki), 2, delaunay_stats, Ptolemy);
       if (to_flip[i] == 2)
-        EdgeFlip(q, m, xi, mc.e(hjk), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, xi, dxi, mc.e(hjk), 2, delaunay_stats, Ptolemy);
       if (to_flip[i] == 5)
-        EdgeFlip(q, m, xi, mc.e(him), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, xi, dxi, mc.e(him), 2, delaunay_stats, Ptolemy);
       if (to_flip[i] == 6)
-        EdgeFlip(q, m, xi, mc.e(hmj), 2, delaunay_stats, Ptolemy);
+        EdgeFlip(q, m, xi, dxi, mc.e(hmj), 2, delaunay_stats, Ptolemy);
     }
 
     return true;
@@ -1220,7 +1236,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
    * @param Ptolemy, bool, when true the edge length is updated via ptolemy formula, otherwise using law of cosine.
    * @return void.
    */
-  static void MakeDelaunay(Mesh<Scalar>& m, VectorX& xi, DelaunayStats& delaunay_stats, SolveStats<Scalar>& solve_stats, bool Ptolemy = true)
+  static void MakeDelaunay(Mesh<Scalar>& m, VectorX& xi, VectorX& dxi, DelaunayStats& delaunay_stats, SolveStats<Scalar>& solve_stats, bool Ptolemy = true)
   {
     Mesh<Scalar>& mc = m.cmesh();
 
@@ -1245,7 +1261,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
         int Re = -1;
         if (type0 == 1 && type1 == 1)
           Re = mc.e(mc.R[mc.h0(e)]);
-        if (!EdgeFlip(q, m, xi, e, 0, delaunay_stats, Ptolemy))
+        if (!EdgeFlip(q, m, xi, dxi, e, 0, delaunay_stats, Ptolemy))
           continue;
         int hn = mc.n[mc.h0(e)];
         q.insert(mc.e(hn));
@@ -1258,7 +1274,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
           int e = Re;
           if (Re == -1)
             spdlog::info("Negative index");
-          if (!EdgeFlip(q, m, xi, e, 1, delaunay_stats, Ptolemy))
+          if (!EdgeFlip(q, m, xi, dxi, e, 1, delaunay_stats, Ptolemy))
             continue;
           int hn = mc.n[mc.h0(e)];
           q.insert(mc.e(hn));
@@ -1401,7 +1417,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       exit(0);
     }
 
-    std::cout << "Wy-xi residual: " << (W*y-xi).norm() << std::endl;
+    // std::cout << "Wy-xi residual: " << (W*y-xi).norm() << std::endl;
 
   }
 
@@ -1471,9 +1487,42 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
         mat = A + a*id;
       }
 
+// #define TRY_RREF
+#ifdef TRY_RREF
       Eigen::SparseLU< Eigen::SparseMatrix<Scalar> > solver(mat);
       VectorX d = solver.solve(b);
+      
+      // mat size [x + n_s + 3*n_f];
+      int n_e = mc.n_edges();
+      int n_f = mc.n_faces();
+      Eigen::SparseMatrix<double> Aeq, Q2; // Aeq: bottom 3*n_f rows of mat
+      Aeq.resize(n_f*3, n_e);
+      typedef Eigen::Triplet<double> Trip;
+      std::vector<Trip> trips;
+      for(int f = 0; f < n_f-1; f++)
+      {
+        int hi = mc.h[f];
+        int hj = mc.n[hi];
+        int hk = mc.n[hj];
+        trips.push_back(Trip(f, h2e[hi], double(mc.sign(hi))));
+        trips.push_back(Trip(f, h2e[hj], double(mc.sign(hj))));
+        trips.push_back(Trip(f, h2e[hk], double(mc.sign(hk))));
+      }
+      Aeq.setFromTriplets(trips.begin(), trips.end());
+      elim_constr(Aeq, Q2);            
 
+      // Eigen::SparseMatrix<double> _mat;
+      // Eigen::VectorXd _b;
+      // // elim_constr(mat_flt, b_flt, _mat, _b);
+      std::cout << "elim done\n";
+      // Eigen::SparseLU< Eigen::SparseMatrix<double> > solver(_mat);
+      // Eigen::VectorXd d_flt = solver.solve(_b);
+      // VectorX d = d_flt.template cast<Scalar>();
+
+#else
+      Eigen::SparseLU< Eigen::SparseMatrix<Scalar> > solver(mat);
+      VectorX d = solver.solve(b);
+#endif
       VectorX dxi(mc.n_halfedges());
       for(int i = 0; i < mc.n_halfedges(); i++)
         dxi[i] = mc.sign(i) * d[h2e[i]];
@@ -1555,7 +1604,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     // Line search
     xi += dxi;
 
-    MakeDelaunay(m, xi, delaunay_stats, solve_stats);
+    MakeDelaunay(m, xi, dxi, delaunay_stats, solve_stats);
     ComputeAngles(mc, xi, alpha, cot_alpha);
 
     int count = 0;
@@ -1569,7 +1618,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       dxi /= 2;
       lambda /= 2; // record changes in lambda as well
       xi -= dxi;
-      MakeDelaunay(m, xi, delaunay_stats, solve_stats);
+      MakeDelaunay(m, xi, dxi, delaunay_stats, solve_stats);
       ComputeAngles(mc, xi, alpha, cot_alpha);
       setup_b(mc, alpha, currentg); // update gradient
       top = currentg.topRows(y.rows());
@@ -1581,7 +1630,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       {
         xi += dxi; // Use full line step
         lambda *= 2;
-        MakeDelaunay(m, xi, delaunay_stats, solve_stats);
+        MakeDelaunay(m, xi, dxi, delaunay_stats, solve_stats);
         ComputeAngles(mc, xi, alpha, cot_alpha);
         setup_b(mc, alpha, currentg); // update gradient
         break;
@@ -1750,7 +1799,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
 
     // Line search
     u += d;
-    MakeDelaunay(m, u, delaunay_stats, solve_stats);
+    MakeDelaunay_u(m, u, delaunay_stats, solve_stats);
     ComputeAngles(mc, u, alpha, cot_alpha);
 
     Gradient(mc, alpha, currentg, solve_stats); // Current gradient value
@@ -1775,7 +1824,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       d /= 2;
       lambda /= 2; // record backtrack changes in lambda
       u -= d; // Backtrack
-      MakeDelaunay(m, u, delaunay_stats, solve_stats);
+      MakeDelaunay_u(m, u, delaunay_stats, solve_stats);
       ComputeAngles(mc, u, alpha, cot_alpha);
       Gradient(mc, alpha, currentg, solve_stats);
       new_e = ConformalEquivalenceEnergy(mc, alpha, u);
@@ -1979,9 +2028,10 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     Scalar lambda = ls_params.lambda0;
 
     // Optionally use Euclidean flips instead of Ptolemy flips for the initial MakeDelaunay
+    VectorX _dxi = xi;
     if (!alg_params.initial_ptolemy){
       if(alg_params.use_xi)
-        MakeDelaunay(m, xi, delaunay_stats, solve_stats, false);
+        MakeDelaunay(m, xi, _dxi, delaunay_stats, solve_stats, false);
       else
         MakeDelaunay_u(m, u, delaunay_stats, solve_stats, false);
       spdlog::debug("Finish first delaunay non_ptolemy");
@@ -1993,7 +2043,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     original_to_equilateral(mc.pts, mc.pt_in_f, mc.n, mc.h, mc.l);
     if (alg_params.initial_ptolemy) {
       if(alg_params.use_xi)
-        MakeDelaunay(m, xi, delaunay_stats, solve_stats, true);
+        MakeDelaunay(m, xi, _dxi, delaunay_stats, solve_stats, true);
       else
         MakeDelaunay_u(m, u, delaunay_stats, solve_stats, true);
       spdlog::debug("Finish first delaunay ptolemy");
@@ -2366,7 +2416,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     {
       m = m0;
       u = u0 + (lambda_min + i * step_size) * d;
-      MakeDelaunay(m, u, delaunay_stats, solve_stats);
+      MakeDelaunay_u(m, u, delaunay_stats, solve_stats);
       ComputeAngles(m, u, alpha, cot_alpha);
       VectorX g;
       Gradient(m, alpha, g, solve_stats);
@@ -2432,7 +2482,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     // Compute angles and cotangents of angles
     VectorX cot_alpha(m0.n_halfedges());
     VectorX alpha(m0.n_halfedges());
-    MakeDelaunay(m0, u0, d_stats_placeholder, s_stats_placeholder, true);
+    MakeDelaunay_u(m0, u0, d_stats_placeholder, s_stats_placeholder, true);
     ComputeAngles(m0, u0, alpha, cot_alpha);
 
     // Compute descent direction from gradient and hessian
@@ -2480,7 +2530,7 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     for (int i = 0; i < n_sample; i++){
       m = m0;
       u = u0 + i * step_size * d;
-      MakeDelaunay(m, u, delaunay_stats, solve_stats);
+      MakeDelaunay_u(m, u, delaunay_stats, solve_stats);
       ComputeAngles(m, u, alpha, cot_alpha);
       E[i] = ConformalEquivalenceEnergy(m, alpha, u);
     }
