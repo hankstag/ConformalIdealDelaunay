@@ -85,7 +85,7 @@ int main(int argc, char* argv[]){
     
     alg_params->initial_ptolemy = true;
     alg_params->max_itr = max_itr;
-    alg_params->bypass_overlay = true;
+    alg_params->bypass_overlay = false;
     
     Eigen::MatrixXd V;
     Eigen::MatrixXi F;

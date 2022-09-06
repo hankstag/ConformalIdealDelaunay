@@ -296,11 +296,20 @@ conformal_metric(const Eigen::MatrixXd &V,
         pt_bcs_scalar[i] = pt_bcs[i].template cast<Scalar>(); 
     }
     auto conformal_out = ConformalIdealDelaunay<Scalar>::FindConformalMetric(mo, u0, pt_fids, pt_bcs_scalar, *alg_params, *ls_params, *stats_params);
-    auto u_o = std::get<0>(conformal_out);
     auto flip_seq = std::get<1>(conformal_out);
-    u.resize(u_o.rows());
-    for(int i = 0; i < u_o.rows(); i++)
-        u[i] = u_o[i];
+
+    std::vector<Scalar> xi;
+    if(alg_params->use_xi){
+        auto xi_o = std::get<0>(conformal_out);
+        xi.resize(xi_o.rows());
+        for(int i = 0; i < xi_o.rows(); i++)
+            xi[i] = xi_o[i];
+    }else{
+        auto u_o = std::get<0>(conformal_out);
+        u.resize(u_o.rows());
+        for(int i = 0; i < u_o.rows(); i++)
+            u[i] = u_o[i];
+    }
     mo.garbage_collection();
     std::vector<std::vector<Scalar>> V_reindex(3);
     for (int i = 0; i < 3; i++)
@@ -335,7 +344,10 @@ conformal_metric(const Eigen::MatrixXd &V,
     }
     std::vector<std::pair<int,int>> endpoints;
     find_origin_endpoints(mo, endpoints);
-    return std::make_tuple(mo, u, pt_fids, pt_bcs_out, vtx_reindex, V_overlay, endpoints); 
+    if(alg_params->use_xi)
+        return std::make_tuple(mo, xi, pt_fids, pt_bcs_out, vtx_reindex, V_overlay, endpoints); 
+    else
+        return std::make_tuple(mo, u, pt_fids, pt_bcs_out, vtx_reindex, V_overlay, endpoints); 
 
 }
 
@@ -1136,7 +1148,11 @@ conformal_parametrization_VL(const Eigen::MatrixXd &V,
     std::vector<Eigen::Matrix<double, 3, 1>> pt_bcs_placeholder;
     auto conformal_out = conformal_metric(V, F, Theta_hat, gamma, kappa_hat, pt_fids_placeholder, pt_bcs_placeholder, alg_params, ls_params, stats_params);
     OverlayMesh<Scalar> mo = std::get<0>(conformal_out);
-    std::vector<Scalar> u = std::get<1>(conformal_out);
+    std::vector<Scalar> u, xi;
+    if(alg_params->use_xi)
+        xi = std::get<1>(conformal_out);
+    else
+        u = std::get<1>(conformal_out);
     std::vector<int> vtx_reindex = std::get<4>(conformal_out);
     auto V_overlay = std::get<5>(conformal_out);
     auto endpoints = std::get<6>(conformal_out);
@@ -1173,10 +1189,21 @@ conformal_parametrization_VL(const Eigen::MatrixXd &V,
     spdlog::info("mc.out size: {}", mo.cmesh().out.size());
 
     // get layout
-    auto layout_res = get_layout(mo, u, bd, cones, do_trim, root);
-    auto u_o = std::get<3>(layout_res);
-    auto v_o = std::get<4>(layout_res);
-    auto is_cut_o = std::get<5>(layout_res);
+    std::vector<bool> is_cut_o;
+    std::vector<Scalar> u_o, v_o;
+    if(alg_params->use_xi){
+        // integrate xi values over mc to get cutgraph + u values
+        // pass this cutgraph(mc) -> cutgraph(mo)
+        // cut open both mc and mo; maintain mappings between them
+        ConformalIdealDelaunay<Scalar>::simultaneous_cut_meshes(mo, xi);
+        // *interpolate u values over mo
+        // layout mo
+    }else{
+        auto layout_res = get_layout(mo, u, bd, cones, do_trim, root);
+        u_o = std::get<3>(layout_res);
+        v_o = std::get<4>(layout_res);
+        is_cut_o = std::get<5>(layout_res);
+    }
 
     // get output VF and metric
     auto FVFT_res = get_FV_FTVT(mo, endpoints, is_cut_o, V_overlay, u_o, v_o);

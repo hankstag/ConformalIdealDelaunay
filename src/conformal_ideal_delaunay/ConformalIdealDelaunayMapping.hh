@@ -42,8 +42,9 @@
 #include "Claussen.hh"
 #include "OverlayMesh.hh"
 #include "FormConversion.hh"
-
-#include "rref.hh"
+#include <queue>
+#include "Halfedge.hh"
+#include <igl/writeOBJ.h>
 
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/ostr.h>
@@ -1941,6 +1942,221 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
 
   }
 
+  // output per-halfedge phi values (value belongs to the vertex of to[he])
+  static void integrate_xi_over_cmesh(Mesh<Scalar>& m, const std::vector<Scalar>& xi, std::vector<bool>& is_cut_h, std::vector<Scalar>& phi, int start_h = 0){
+    
+    auto is_cut_h_gen = std::vector<bool>(m.n_halfedges(), false);
+    bool cut_given = !is_cut_h.empty();
+
+    phi = std::vector<Scalar>(m.n_halfedges(), 0.0);
+    int h = m.n[m.n[start_h]];
+    phi[h] = 0.0;
+    h = m.n[h];
+    phi[h] = xi[h];
+    auto done = std::vector<bool>(m.n_faces(), false);
+
+    std::queue<int> Q;
+    Q.push(h);
+    done[m.f[h]] = true;
+
+    while (!Q.empty())
+    {
+      h = Q.front();
+      Q.pop();
+      int hn = m.n[h];
+      int hp = m.n[hn];
+      phi[hn] = phi[h] + xi[hn];
+      int hno = m.opp[hn];
+      int hpo = m.opp[hp];
+      int ho = m.opp[h];
+
+      if (m.f[hno] != -1 && !done[m.f[hno]] && !(cut_given && is_cut_h[hn]))
+      {
+        done[m.f[hno]] = true;
+        phi[hno] = phi[h];
+        phi[m.n[m.n[hno]]] = phi[hn];
+        Q.push(hno);
+      }
+      else
+      {
+        is_cut_h_gen[hn] = true;
+        is_cut_h_gen[m.opp[hn]] = true;
+      }
+
+      if (m.f[hpo] != -1 && !done[m.f[hpo]] && !(cut_given && is_cut_h[hp]))
+      {
+        done[m.f[hpo]] = true;
+        phi[hpo] = phi[hn];
+        phi[m.n[m.n[hpo]]] = phi[hp];
+        Q.push(hpo);
+      }
+      else
+      {
+        is_cut_h_gen[hp] = true;
+        is_cut_h_gen[m.opp[hp]] = true;
+      }
+
+      if (m.f[ho] != -1 && !done[m.f[ho]] && !(cut_given && is_cut_h[ho]))
+      {
+        done[m.f[ho]] = true;
+        phi[ho] = phi[hp];
+        phi[m.n[m.n[ho]]] = phi[h];
+        Q.push(ho);
+      }
+    }
+
+    is_cut_h = is_cut_h_gen;
+
+    std::cout << "integrate done!\n";
+
+    // validation phi values
+    for(int i = 0; i < m.n_halfedges(); i++){
+      Scalar u0 = phi[i];
+      Scalar u1 = phi[m.n[m.n[i]]];
+      Scalar _xi = u0-u1;
+      if(abs(_xi - xi[i]) > 1e-12)
+        std::cerr << std::setprecision(17) << "error (" << _xi << ", " << xi[i] << "): " << abs(_xi - xi[i]) << std::endl;
+    }
+
+  }
+
+  static void cut_along_edges(Mesh<Scalar>& m, std::vector<bool>& is_cut_h, Mesh<Scalar>& m_cut){
+    // cut mesh along is_cut_h
+    // compute valence of each vertex in is_cut_h
+    m_cut = m;
+    std::vector<int> valence(m.n_vertices(), 0);
+    for(int hi = 0; hi < is_cut_h.size(); hi++){
+      if(is_cut_h[hi]){
+        int v0 = m.to[hi], v1 = m.to[m.opp[hi]];
+        valence[v0] += 1;
+      }
+    }
+
+    std::vector<int> count(m.n_vertices(), 1);
+    int nv = m.n_vertices();
+    for(int h0 = 0; h0 < m.n_halfedges(); h0++){
+      int i = m.to[m.opp[h0]];
+      if(i > m.n_vertices()) continue; // bypass new added vertices since already handled
+      // rorate ccw until reach a cut-edge
+      int he = h0;
+      if(count[i] == valence[i]) continue;
+      if(valence[i] != 0 && valence[i] != count[i]){
+        // vertex i is on cut and has not been duplicated enough
+        while(!is_cut_h[he]){
+          he = m.n[m.opp[he]];
+          if(he == h0) break;
+        }
+      }
+
+      // start from he - rorate ccw until another halfedge is reached
+      // collect all faces that are visited
+      int he2 = he;
+      if(m_cut.opp[he2] == -1) continue;
+      std::vector<int> fan;
+      do{
+        fan.push_back(m.f[he2]);
+        he2 = m.opp[m.n[m.n[he2]]];
+      }while(!is_cut_h[he2] && he != he2);
+
+      if(he2 != he){ // when there's a single cut around vertex i - no need to duplicate vertex
+        // make a copy of vertex i
+        m_cut.out.push_back(he);
+        count[i]++;
+        for(int fi: fan){
+          int hi = m_cut.h[fi];
+          int hj = m_cut.n[hi];
+          int hk = m_cut.n[hj];
+          if(m_cut.to[hi] == i) m_cut.to[hi] = nv;
+          if(m_cut.to[hj] == i) m_cut.to[hj] = nv;
+          if(m_cut.to[hk] == i) m_cut.to[hk] = nv;
+        }
+        nv++;
+      }
+      m_cut.opp[m_cut.opp[he]] = -1;
+      m_cut.opp[he] = -1;
+      if(he2 != he){
+        m_cut.opp[m_cut.opp[he2]] = -1;
+        m_cut.opp[he2] = -1;
+      }
+    }
+
+    // setup halfedge sequence along the boundary loop
+    std::vector<int> next_he_ext;
+    std::vector<int> opp_ext;
+    build_boundary_loops(m_cut.n, m_cut.opp, next_he_ext, opp_ext);
+    m_cut.n = next_he_ext;
+    m_cut.opp = opp_ext;
+    for(int i = m.n_halfedges(); i < m_cut.n_halfedges(); i++){
+      m_cut.f.push_back(-1);
+      m_cut.to.push_back(m_cut.to[m_cut.n[m_cut.n[m_cut.opp[i]]]]);
+    }
+
+    std::vector<std::vector<int>> cycles;
+    build_orbits(m_cut.n, cycles);
+    int n_cc = 0;
+    for(auto c: cycles){
+      if(c.size() != 3)
+        n_cc++;
+    }
+    spdlog::info("#bd: {}", n_cc);
+    spdlog::info("after cut #v {} -> {}", m.n_vertices(), m_cut.n_vertices());
+
+    for(int i = 0; i < m_cut.out.size(); i++){
+      if(m_cut.out[i] >= m_cut.n_halfedges() || m_cut.out[i] < 0)
+        spdlog::error("[out] array error! {}/{}", m_cut.out[i], m_cut.n_halfedges());
+    }
+
+    for(int i = 0; i < m_cut.n.size(); i++){
+      if(m_cut.n[i] >= m_cut.n_halfedges() || m_cut.n[i] < 0)
+        spdlog::error("[n] array error! {}/{}", m_cut.n[i], m_cut.n_halfedges());
+    }
+
+    for(int i = 0; i < m_cut.opp.size(); i++){
+      if(m_cut.opp[i] >= m_cut.n_halfedges())
+        spdlog::error("[opp] array error! {}/{}", m_cut.opp[i], m_cut.n_halfedges());
+    }
+
+    for(int i = 0; i < m_cut.to.size(); i++){
+      if(m_cut.to[i] >= m_cut.n_vertices())
+        spdlog::error("[to] array error! {}/{}", m_cut.to[i], m_cut.n_vertices());
+    }
+
+    std::vector<bool> attached_v(m_cut.n_vertices(), false);
+    for(int i = 0; i < m_cut.to.size(); i++){
+      attached_v[m_cut.to[i]] = true;
+    }
+    for(int i = 0; i < attached_v.size(); i++){
+      if(!attached_v[i])
+        spdlog::error("vertex {} not visited!", i);
+    }
+
+  }
+
+  static void simultaneous_cut_meshes(OverlayMesh<Scalar>& mo, const std::vector<Scalar>& xi){
+    std::cout << "do simultaneous cut meshes\n";
+    Mesh<Scalar> mc = mo.cmesh();
+    std::cout << "#mc.he / #xi: " << mc.n_halfedges() << "/" << xi.size() << std::endl;
+
+    // integrate xi values by bfs
+    std::vector<Scalar> phi;
+    std::vector<bool> is_cut_h;
+    integrate_xi_over_cmesh(mc, xi, is_cut_h, phi);
+
+    // propagate is_cut_h to overlay mesh
+    std::vector<Scalar> is_cut_h_mo;
+    propagate_cut_edges(mo, is_cut_h, is_cut_h_mo);
+
+    Mesh<Scalar> m_cut;
+    cut_along_edges(mc, is_cut_h, m_cut);
+
+    
+
+
+    std::cout << "cut current mesh done\n";
+
+    exit(0);
+  }
+
   /**
    * The top-level conformal-hyperblic-delaunay algorithm
    * 
@@ -2174,10 +2390,10 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       cnt++;
     }
 
-    exit(0);
-    xi_to_phi(mc, xi, u);
-
-    return std::make_tuple(u, delaunay_stats.flip_seq);
+    if(alg_params.use_xi)
+      return std::make_tuple(xi, delaunay_stats.flip_seq);
+    else
+      return std::make_tuple(u, delaunay_stats.flip_seq);
 
   }
 
