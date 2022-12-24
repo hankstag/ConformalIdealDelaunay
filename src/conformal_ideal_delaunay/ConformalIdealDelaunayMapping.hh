@@ -2020,41 +2020,76 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
 
   }
 
-  static void cut_along_edges(Mesh<Scalar>& m, std::vector<bool>& is_cut_h, Mesh<Scalar>& m_cut){
-    // cut mesh along is_cut_h
-    // compute valence of each vertex in is_cut_h
-    m_cut = m;
-    std::vector<int> valence(m.n_vertices(), 0);
-    for(int hi = 0; hi < is_cut_h.size(); hi++){
-      if(is_cut_h[hi]){
-        int v0 = m.to[hi], v1 = m.to[m.opp[hi]];
-        valence[v0] += 1;
+  static bool has_complex_edges(Mesh<Scalar>& m){
+    for(int i = 0; i < m.n_halfedges(); i++){
+      if(m.f[i] == m.f[m.opp[i]])
+        return true;
+    }
+    return false;
+  }
+
+  static int count_components(Mesh<Scalar>& m, std::vector<bool>& is_cut_h){
+    int n_compo = 0;
+    int nF = m.n_faces();
+    std::vector<bool> done(nF, false);
+    int n_visited = 0;
+    std::vector<int> group(nF, 0);
+    for(int f = 0; f < nF; f++){
+      if(done[f]) continue;
+      n_compo++;
+      std::queue<int> Q; Q.push(f);
+      group[f] = n_compo-1;
+      while(!Q.empty()){
+        int fi = Q.front();
+        done[fi] = true;
+        Q.pop();
+        group[fi] = n_compo-1;
+        int h0 = m.h[fi]; int f0 = m.f[m.opp[h0]];
+        int h1 = m.n[h0]; int f1 = m.f[m.opp[h1]];
+        int h2 = m.n[h1]; int f2 = m.f[m.opp[h2]];
+        if(f0 != -1 && !done[f0])
+          Q.push(f0);
+        if(f1 != -1 && !done[f1])
+          Q.push(f1);
+        if(f2 != -1 && !done[f2])
+          Q.push(f2);
       }
     }
+    for(int i = 0; i < done.size(); i++)
+      if(done[i])
+        n_visited++;
 
+    spdlog::info("#compo: {}", n_compo);
+    spdlog::info("#f visited: {}/{}", n_visited, nF);
+    return n_compo;
+  }
+
+  // cut mesh along is_cut_h
+  static void cut_along_edges(Mesh<Scalar>& m, std::vector<bool>& is_cut_h, Mesh<Scalar>& m_cut){
+
+    m_cut = m;
+
+    // determine how many copies of each vertex should have after cut open
+    // this quantity only makes sense for vertices on cuts
+    std::vector<int> cut_degree(m.n_vertices(), 0);
+    for(int hi = 0; hi < is_cut_h.size(); hi++){
+      if(is_cut_h[hi])
+        cut_degree[m.to[hi]] += 1;
+    }
     std::vector<int> count(m.n_vertices(), 1);
     int nv = m.n_vertices();
     for(int h0 = 0; h0 < m.n_halfedges(); h0++){
       int i = m.to[m.opp[h0]];
-      if(i > m.n_vertices()) continue; // bypass new added vertices since already handled
-      // rorate ccw until reach a cut-edge
-      int he = h0;
-      if(count[i] == valence[i]) continue;
-      if(valence[i] != 0 && valence[i] != count[i]){
-        // vertex i is on cut and has not been duplicated enough
-        while(!is_cut_h[he]){
-          he = m.n[m.opp[he]];
-          if(he == h0) break;
-        }
-      }
+      if(!is_cut_h[h0]) continue;       // bypass normal halfedges
+      if(count[i] == cut_degree[i]) continue; // bypass if the vertex pointed at already have enough copies
 
-      // start from he - rorate ccw until another halfedge is reached
+      int he = h0;
+      // start from he - rorate cw until another halfedge is reached
       // collect all faces that are visited
       int he2 = he;
-      if(m_cut.opp[he2] == -1) continue;
-      std::vector<int> fan;
+      std::vector<int> faces_visited;
       do{
-        fan.push_back(m.f[he2]);
+        faces_visited.push_back(m.f[he2]);
         he2 = m.opp[m.n[m.n[he2]]];
       }while(!is_cut_h[he2] && he != he2);
 
@@ -2062,20 +2097,20 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
         // make a copy of vertex i
         m_cut.out.push_back(he);
         count[i]++;
-        for(int fi: fan){
-          int hi = m_cut.h[fi];
-          int hj = m_cut.n[hi];
-          int hk = m_cut.n[hj];
-          if(m_cut.to[hi] == i) m_cut.to[hi] = nv;
-          if(m_cut.to[hj] == i) m_cut.to[hj] = nv;
-          if(m_cut.to[hk] == i) m_cut.to[hk] = nv;
+        for(int fi: faces_visited){
+          int hi = m.h[fi];
+          int hj = m.n[hi];
+          int hk = m.n[hj];
+          if(m.to[hi] == i) m_cut.to[hi] = nv;
+          if(m.to[hj] == i) m_cut.to[hj] = nv;
+          if(m.to[hk] == i) m_cut.to[hk] = nv;
         }
         nv++;
       }
-      m_cut.opp[m_cut.opp[he]] = -1;
+      m_cut.opp[m.opp[he]] = -1;
       m_cut.opp[he] = -1;
       if(he2 != he){
-        m_cut.opp[m_cut.opp[he2]] = -1;
+        m_cut.opp[m.opp[he2]] = -1;
         m_cut.opp[he2] = -1;
       }
     }
@@ -2086,9 +2121,12 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
     build_boundary_loops(m_cut.n, m_cut.opp, next_he_ext, opp_ext);
     m_cut.n = next_he_ext;
     m_cut.opp = opp_ext;
+    m_cut.l.resize(m_cut.n.size());
+    m_cut.h = m.h;
     for(int i = m.n_halfedges(); i < m_cut.n_halfedges(); i++){
       m_cut.f.push_back(-1);
       m_cut.to.push_back(m_cut.to[m_cut.n[m_cut.n[m_cut.opp[i]]]]);
+      m_cut.l[i] = m_cut.l[m_cut.opp[i]];
     }
 
     std::vector<std::vector<int>> cycles;
@@ -2098,8 +2136,10 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
       if(c.size() != 3)
         n_cc++;
     }
+    spdlog::info("#f: {} -> {}", m.n_faces(), m_cut.n_faces());
     spdlog::info("#bd: {}", n_cc);
     spdlog::info("after cut #v {} -> {}", m.n_vertices(), m_cut.n_vertices());
+    // count_components(m_cut, is_cut_h);
 
     for(int i = 0; i < m_cut.out.size(); i++){
       if(m_cut.out[i] >= m_cut.n_halfedges() || m_cut.out[i] < 0)
@@ -2130,31 +2170,249 @@ static void HessianXi(const Mesh<Scalar>& m, const VectorX& cot_alpha, Eigen::Sp
         spdlog::error("vertex {} not visited!", i);
     }
 
+    for(int i = 0; i < m.out.size(); i++){
+      if(count[i] != cut_degree[i] && cut_degree[i] != 0)
+        spdlog::error("mismatch cut degree {}/{}", count[i], cut_degree[i]);
+    }
+
+    for(int i = 0; i < m_cut.n_halfedges(); i++){
+      if(i < is_cut_h.size() && is_cut_h[i] && m_cut.f[m_cut.opp[i]] != -1){
+        spdlog::error("he({}) should be cut open but not!", i);
+      }
+    }
+
   }
 
-  static void simultaneous_cut_meshes(OverlayMesh<Scalar>& mo, const std::vector<Scalar>& xi){
+  static void propagate_cut_edges(OverlayMesh<Scalar>& mo, const std::vector<bool>& is_cut_h, std::vector<bool>& is_cut_h_mo){
+    is_cut_h_mo = std::vector<bool>(mo.n_halfedges(), false);
+    for(int i = 0; i < mo.n_halfedges(); i++){
+      if(mo.edge_type[i] == ORIGINAL_EDGE) continue;
+      int he_current = mo.origin[i];
+      if(is_cut_h[he_current]){
+        is_cut_h_mo[i] = true;
+        is_cut_h_mo[mo.opp[i]] = true;
+      }
+    }
+  }
+
+static void compute_layout_xi(Mesh<Scalar>& m, const std::vector<Scalar>& xi, std::vector<Scalar>& u, std::vector<Scalar>& v) //metric -> parametrization
+{
+    int n_f = m.n_faces();
+    int n_h = m.n_halfedges();
+    std::vector<Scalar> alpha(n_h, 0.0);
+    for(int f = 0; f < n_f; f++)
+    {
+      int hi = m.h[f];
+      int hj = m.n[hi];
+      int hk = m.n[hj];
+      // (following "On Discrete Conformal Seamless Similarity Maps")
+      Scalar li = m.l[m.e(hi)] * exp(1.0/6.0*(xi[hk]-xi[hj]));
+      Scalar lj = m.l[m.e(hj)] * exp(1.0/6.0*(xi[hi]-xi[hk]));
+      Scalar lk = m.l[m.e(hk)] * exp(1.0/6.0*(xi[hj]-xi[hi]));
+      // (following "A Cotangent Laplacian for Images as Surfaces")
+      Scalar s = (li+lj+lk)/2.0;
+      Scalar Aijk4 = 4.0*sqrt(std::max<Scalar>(0.0, s*(s-li)*(s-lj)*(s-lk)));
+      Scalar Ijk = (-li*li+lj*lj+lk*lk);
+      Scalar iJk = (li*li-lj*lj+lk*lk);
+      Scalar ijK = (li*li+lj*lj-lk*lk);
+      alpha[hi] = acos(std::min<Scalar>(1.0, std::max<Scalar>(-1.0, Ijk/(2.0*lj*lk))));
+      alpha[hj] = acos(std::min<Scalar>(1.0, std::max<Scalar>(-1.0, iJk/(2.0*lk*li))));
+      alpha[hk] = acos(std::min<Scalar>(1.0, std::max<Scalar>(-1.0, ijK/(2.0*li*lj))));
+    }
+
+    std::vector<Scalar> phi(n_h);
+    
+    u.resize(n_h);
+    v.resize(n_h);
+    
+    //set starting point
+    int h = 0;
+    phi[h] = 0.0;
+    u[h] = 0.0;
+    v[h] = 0.0;
+    h = m.n[h];
+    phi[h] = xi[h];
+    u[h] = m.l[m.e(h)]*exp(phi[h]/2);
+    v[h] = 0.0;
+
+    // layout the rest of the mesh by BFS
+    std::vector<bool> visited(n_f, false);
+    std::queue<int> q;
+    q.push(h);
+    visited[m.f[h]] = true;
+    while(!q.empty())
+    {
+      h = q.front();
+      q.pop();
+      if(m.f[h] == -1) continue;
+
+      int hn = m.n[h];
+      int hp = m.n[hn];
+      
+      phi[hn] = phi[h] + xi[hn];
+      
+      Scalar len = m.l[m.e(hn)] * exp((phi[h]+phi[hn])/2);
+      
+      Scalar ud = u[hp]-u[h];
+      Scalar vd = v[hp]-v[h];
+      Scalar d = sqrt(ud*ud + vd*vd);
+      Scalar co = cos(alpha[hp]);
+      Scalar si = sin(alpha[hp]);
+      
+      u[hn] = u[h] + (co*ud + si*vd)*len/d;
+      v[hn] = v[h] + (co*vd - si*ud)*len/d;
+      
+      int ho = m.opp[h];
+      int hno = m.opp[hn];
+      int hpo = m.opp[hp];
+      if(!visited[m.f[hno]])
+      {
+        visited[m.f[hno]] = true;
+        phi[hno] = phi[h];
+        phi[m.n[m.n[hno]]] = phi[hn];
+        u[hno] = u[h];
+        v[hno] = v[h];
+        u[m.n[m.n[hno]]] = u[hn];
+        v[m.n[m.n[hno]]] = v[hn];
+        q.push(hno);
+      }
+      if(!visited[m.f[hpo]])
+      {
+        visited[m.f[hpo]] = true;
+        phi[hpo] = phi[hn];
+        phi[m.n[m.n[hpo]]] = phi[hp];
+        u[hpo] = u[hn];
+        v[hpo] = v[hn];
+        u[m.n[m.n[hpo]]] = u[hp];
+        v[m.n[m.n[hpo]]] = v[hp];
+        q.push(hpo);
+      }
+      if(!visited[m.f[ho]])
+      {
+        visited[m.f[ho]] = true;
+        phi[ho] = phi[hn];
+        phi[m.n[m.n[ho]]] = phi[hp];
+        u[ho] = u[hn];
+        v[ho] = v[hn];
+        u[m.n[m.n[ho]]] = u[hp];
+        v[m.n[m.n[ho]]] = v[hp];
+        q.push(ho);
+      }
+    }
+
+    int n_visited = 0;
+    for(int i = 0; i < visited.size(); i++)
+      if(visited[i])
+        n_visited++;
+    spdlog::info("visited faces: {}/{}", n_visited, m.n_faces());
+
+  }
+
+  static void simultaneous_cut_meshes(OverlayMesh<Scalar>& mo, OverlayMesh<Scalar>& mo_cut, const std::vector<Scalar>& xi, std::vector<Scalar>& u){
     std::cout << "do simultaneous cut meshes\n";
     Mesh<Scalar> mc = mo.cmesh();
     std::cout << "#mc.he / #xi: " << mc.n_halfedges() << "/" << xi.size() << std::endl;
 
     // integrate xi values by bfs
-    std::vector<Scalar> phi;
     std::vector<bool> is_cut_h;
-    integrate_xi_over_cmesh(mc, xi, is_cut_h, phi);
+    std::vector<Scalar> u_he;
+    integrate_xi_over_cmesh(mc, xi, is_cut_h, u_he);
 
     // propagate is_cut_h to overlay mesh
-    std::vector<Scalar> is_cut_h_mo;
+    std::vector<bool> is_cut_h_mo(mo.n_halfedges(), false);
     propagate_cut_edges(mo, is_cut_h, is_cut_h_mo);
 
-    Mesh<Scalar> m_cut;
-    cut_along_edges(mc, is_cut_h, m_cut);
+    Mesh<Scalar> mc_cut;
+    cut_along_edges(mc, is_cut_h, mc_cut);
 
-    
+    int n_v_mc = mc.n_vertices();
+    // u is per-vertex and u_he is per-halfedge
+    u.resize(mc_cut.n_vertices());
+    u_he.resize(mc_cut.n_halfedges());
+    for(int hi = mc.n_halfedges(); hi < mc_cut.n_halfedges(); hi++){
+      int h0 = mc_cut.opp[hi];
+      int h1 = hi; // new halfedge
+      int h3 = mc.opp[h0];
+      int h2 = mc_cut.opp[h3]; // new halfedge
+      u_he[h2] = u_he[mc.n[mc.n[h3]]];
+      u_he[h1] = u_he[mc.n[mc.n[h0]]];
+    }
 
+    for(int i = 0; i < mc_cut.n_halfedges(); i++){
+      u[mc_cut.to[i]] = u_he[i];
+    }
 
-    std::cout << "cut current mesh done\n";
+    for(int i = 0; i < mc_cut.n_halfedges(); i++){
+      if(mc_cut.f[i] == -1) continue;
+      Scalar u0 = u[mc_cut.to[i]]; // u_he[i];
+      Scalar u1 = u[mc_cut.to[mc_cut.n[mc_cut.n[i]]]]; // u_he[mc_cut.n[mc_cut.n[i]]];
+      if(abs(xi[i] + (u1-u0)) > 1e-14){
+        std::cout << "-----------------------\n";
+        std::cout << "u0(" << i << "): " << u0 << std::endl;
+        std::cout << "u1(" << mc_cut.n[mc_cut.n[i]] << "): " << u1 << std::endl;
+        std::cout << "xi[" <<i << "]: " << xi[i] << std::endl;
+        std::cout << "111 diff(xi,u), h(" << i << "): " << xi[i] + (u1-u0) << std::endl;
+        std::cout << std::endl;
+      }
+    }
 
-    exit(0);
+    std::ofstream zz; zz.open("./m_info_mc.txt", std::ios_base::out);
+    for(int i = 0; i < mc_cut.to.size(); i++)
+      zz << "to "<< i << ": " << mc_cut.to[i] << std::endl;
+    for(int i = 0; i < mc_cut.opp.size(); i++)
+      zz << "opp " << i << ": " << mc_cut.opp[i] << std::endl;
+    zz.close();
+
+    int n_he_mo = mo.n_halfedges();
+    mo_cut = mo;
+    cut_along_edges(mo, is_cut_h_mo, mo_cut);
+
+    mo_cut.cmesh() = mc_cut;
+
+    mo_cut.prev.resize(mo_cut.n_halfedges());
+    mo_cut.origin.resize(mo_cut.n_halfedges());
+    mo_cut.origin_of_origin.resize(mo_cut.n_halfedges());
+    mo_cut.edge_type.resize(mo_cut.n_halfedges());
+    mo_cut.vertex_type.resize(mo_cut.n_vertices());
+
+    mo_cut.first_segment.resize(mo_cut.n_halfedges());
+
+    // any new halfedge is a boundary edge
+    // its origin value (corresponding current halfedge) should be the same as its opp
+    mo_cut.seg_bcs.resize(mo_cut.n_halfedges());
+    for(int i = n_he_mo; i < mo_cut.n_halfedges(); i++){
+      mo_cut.origin[i] = mo_cut.origin[mo_cut.opp[i]];
+      mo_cut.origin_of_origin[i] = mo_cut.origin_of_origin[mo_cut.opp[i]];
+      mo_cut.seg_bcs[i] = mo_cut.seg_bcs[mo_cut.opp[i]];
+      std::reverse(mo_cut.seg_bcs[i].begin(), mo_cut.seg_bcs[i].end());
+      mo_cut.first_segment[i] = mo_cut.first_segment[mo_cut.opp[i]];
+      mo_cut.edge_type[i] = mo_cut.edge_type[mo_cut.opp[i]];
+      mo_cut.f[i] = -1;
+    }
+    std::vector<int> v2o(mo_cut.out.size(), 0); // new vertices to original vertices before cut
+    for(int i = 0; i < mo_cut.n.size(); i++){
+      if(mo_cut.f[i] == -1) continue;
+      int v0 = mo.to[i];
+      int v1 = mo_cut.to[i];
+      v2o[v1] = v0;
+      mo_cut.vertex_type[v1] = mo.vertex_type[v0];
+    }
+
+    std::vector<std::vector<int>> cycles;
+    build_orbits(mo_cut.n, cycles);
+    for(int i = 0; i < cycles.size(); i++){
+      if(cycles[i].size() != 3){
+        for(int j = 0; j < cycles[i].size(); j++){
+          int h1 = cycles[i][j];
+          int h2 = cycles[i][(j+1)%cycles[i].size()];
+          mo_cut.prev[h2] = h1;
+        }
+      }
+    }
+
+    for(int i = n_he_mo; i < mo_cut.n_halfedges(); i++)
+      mo_cut.edge_type[i] = mo_cut.edge_type[mo_cut.opp[i]];
+
   }
 
   /**

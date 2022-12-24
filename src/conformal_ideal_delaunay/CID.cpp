@@ -14,6 +14,8 @@
 #include <igl/boundary_loop.h>
 #include <igl/edges.h>
 
+#include <igl/opengl/glfw/Viewer.h>
+
 // return n_genus and n_bd
 std::pair<int,int> topology_info_of_mesh(const Eigen::MatrixXi& F){
   Eigen::MatrixXi C, Ci;
@@ -184,6 +186,34 @@ int main(int argc, char* argv[]){
     Eigen::MatrixXd p_uv(u.size(), 2);
     for(int i = 0; i < u.size(); i++)
       p_uv.row(i) << u[i], v[i];
+
+    double scale = 1.0;
+    bool show_uv = false;
+    igl::opengl::glfw::Viewer viewer;
+    viewer.callback_key_down = [&](igl::opengl::glfw::Viewer &, unsigned int key, int mod)
+    {
+        if(key == '1'){
+            scale *= 2;
+            viewer.data().set_uv(scale * p_uv, pFuv);
+        }else if(key == '2'){
+            scale /= 2.0;
+            viewer.data().set_uv(scale * p_uv, pFuv);
+        }else if(key == '3'){
+            viewer.data().clear();
+            show_uv = !show_uv;
+            if(show_uv){
+                viewer.data().set_mesh(p_uv, pFuv);
+                viewer.core().align_camera_center(p_uv);
+            }else
+                viewer.data().set_mesh(pVn, pFn);
+        }
+        return false;
+    };
+
+    viewer.data().set_mesh(pVn, pFn);
+    viewer.data().set_uv(p_uv, pFuv);
+    viewer.data().show_texture = true;
+    viewer.launch();
 
     return 0;
 

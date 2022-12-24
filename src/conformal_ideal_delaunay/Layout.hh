@@ -38,6 +38,7 @@
 #include <set>
 #include "OverlayMesh.hh"
 #include <igl/writeOBJ.h>
+#include <cmath>
 #ifdef WITH_MPFR
 #include <unsupported/Eigen/MPRealSupport>
 #endif
@@ -107,6 +108,7 @@ compute_layout(Mesh<Scalar> &m, const std::vector<Scalar> &u, std::vector<bool>&
     h = m.n[m.n[start_h]];
   }
 
+  h = 0;
   _u[h] = 0.0;
   _v[h] = 0.0;
   phi[h] = 0.0;
@@ -227,6 +229,15 @@ compute_layout(Mesh<Scalar> &m, const std::vector<Scalar> &u, std::vector<bool>&
       Q.push(ho);
     }
   }
+
+  for(int f = 0; f < done.size(); f++){
+    if(!done[f])
+      std::cout << "error! f"<<f << " not visited!\n";
+  }
+
+  for(int i = 0; i < _u.size(); i++)
+    if(isnan(_u[i]))
+      std::cout << i << ": " << _u[i] << std::endl;
 
   return std::make_tuple(_u, _v, is_cut_h_gen);
   
@@ -703,6 +714,22 @@ std::tuple<std::vector<Scalar>, std::vector<Scalar>, std::vector<bool>,
   
 };
 
+template <typename Scalar>
+bool foundNaNinVec(const Eigen::Matrix<Scalar, -1, 1>& vec){
+  for(int i = 0; i < vec.rows(); i++)
+    if(isnan(vec(i)))
+      return true;
+  return false;
+}
+
+template <typename Scalar>
+bool foundNaNinSTDVec(const std::vector<Scalar>& vec){
+  for(int i = 0; i < vec.size(); i++)
+    if(isnan(vec[i]))
+      return true;
+  return false;
+}
+
 /**
  * @brief Given overlay mesh with associated flat metric compute the layout
  * 
@@ -744,8 +771,11 @@ std::tuple<std::vector<Scalar>, std::vector<Scalar>, std::vector<bool>,
 
   m_o.bc_eq_to_scaled(mc.n, mc.to, mc.l, u_eig);
 
+  std::cout << "NaN detected in vec before interpo: " << foundNaNinVec(u_eig) << std::endl;
   auto u_o = m_o.interpolate_along_c_bc(mc.n, mc.f, _u_c);
   auto v_o = m_o.interpolate_along_c_bc(mc.n, mc.f, _v_c);
+  std::cout << "NaN detected in vec after interpo(u): " << foundNaNinSTDVec(_u_c) << std::endl;
+  std::cout << "NaN detected in vec after interpo(v): " << foundNaNinSTDVec(_v_c) << std::endl;
   spdlog::info("Interpolate on overlay mesh done.");
 
   if(!bd.empty()){ 
@@ -872,6 +902,22 @@ std::tuple<std::vector<Scalar>, std::vector<Scalar>, std::vector<bool>,
     if (do_trim)
       trim_open_branch(m_o, f_labels, singularities, is_cut_o);
   }
+
+#ifdef DEBUG_LAYOUT_SEPA
+  Eigen::Matrix<Scalar, -1, -1> uv(m_o.n_faces()*3, 3);
+  Eigen::MatrixXi Fuv(m_o.n_faces(), 3);
+  for(int i = 0; i < Fuv.rows(); i++){
+    int h0 = m_o.h[i];
+    int h1 = m_o.n[h0];
+    int h2 = m_o.n[h1];
+    uv.row(i*3)   << _u_o[h0], _v_o[h0], 0;
+    uv.row(i*3+1) << _u_o[h1], _v_o[h1], 0;
+    uv.row(i*3+2) << _u_o[h2], _v_o[h2], 0;
+    Fuv.row(i) << i*3, i*3+1, i*3+2;
+  }
+  Eigen::MatrixXd _uv = uv.template cast<double>();
+  igl::writeOBJ("viewLayout.obj", _uv, Fuv);
+#endif
 
   return std::make_tuple(_u_c, _v_c, is_cut_c, _u_o, _v_o, is_cut_o);
   

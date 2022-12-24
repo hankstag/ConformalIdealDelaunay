@@ -107,7 +107,7 @@ namespace OverlayProblem{
         int h0(int e) const { return (e < opp[e]) ? e : opp[e]; }
         int h1(int e) const { return (e < opp[e]) ? opp[e] : e; }
         double sign(int h) const { return (h < opp[h]) ? 1.0 : -1.0; }
-        
+
         Mesh()
         {
             if(type.size() != n.size()) type.resize(n.size(), 0);
@@ -643,7 +643,8 @@ namespace OverlayProblem{
               this->n[hmap[i]] = hmap[this->n[i]];
               this->prev[hmap[i]] = hmap[this->prev[i]];
               this->to[hmap[i]] = vmap[this->to[i]];
-              this->f[hmap[i]] = fmap[this->f[i]];
+              if(this->f[i] != -1)
+                this->f[hmap[i]] = fmap[this->f[i]];
               this->opp[hmap[i]] = hmap[this->opp[i]];
               edge_type[hmap[i]] = edge_type[i];
               origin[hmap[i]] = origin[i];

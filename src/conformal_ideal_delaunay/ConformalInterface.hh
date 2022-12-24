@@ -1191,13 +1191,18 @@ conformal_parametrization_VL(const Eigen::MatrixXd &V,
     // get layout
     std::vector<bool> is_cut_o;
     std::vector<Scalar> u_o, v_o;
+    OverlayProblem::OverlayMesh<Scalar> mo_cut = mo;
     if(alg_params->use_xi){
         // integrate xi values over mc to get cutgraph + u values
         // pass this cutgraph(mc) -> cutgraph(mo)
         // cut open both mc and mo; maintain mappings between them
-        ConformalIdealDelaunay<Scalar>::simultaneous_cut_meshes(mo, xi);
-        // *interpolate u values over mo
-        // layout mo
+        ConformalIdealDelaunay<Scalar>::simultaneous_cut_meshes(mo, mo_cut, xi, u);
+        // get layout
+        auto layout_res = get_layout(mo_cut, u, bd, cones, do_trim, root);
+        u_o = std::get<3>(layout_res);
+        v_o = std::get<4>(layout_res);
+        is_cut_o = std::get<5>(layout_res);
+        
     }else{
         auto layout_res = get_layout(mo, u, bd, cones, do_trim, root);
         u_o = std::get<3>(layout_res);
